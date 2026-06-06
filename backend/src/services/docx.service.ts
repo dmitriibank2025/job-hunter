@@ -14,6 +14,27 @@ function createParagraph(line: string): Paragraph {
         return new Paragraph("");
     }
 
+    if (clean.startsWith("# ")) {
+        return new Paragraph({
+            text: clean.slice(2).trim(),
+            heading: HeadingLevel.TITLE,
+        });
+    }
+
+    if (clean.startsWith("## ")) {
+        return new Paragraph({
+            text: clean.slice(3).trim(),
+            heading: HeadingLevel.HEADING_2,
+        });
+    }
+
+    if (clean.startsWith("### ")) {
+        return new Paragraph({
+            text: clean.slice(4).trim(),
+            heading: HeadingLevel.HEADING_3,
+        });
+    }
+
     if (
         clean === "SUMMARY" ||
         clean === "SKILLS" ||

@@ -43,9 +43,6 @@ importers:
       docx:
         specifier: ^9.7.1
         version: 9.7.1
-      docx-templates:
-        specifier: ^4.15.0
-        version: 4.15.0
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
@@ -2326,10 +2323,6 @@ packages:
 
   dingbat-to-unicode@1.0.1:
     resolution: {integrity: sha512-98l0sW87ZT58pU4i61wa2OHwxbiYSbuxsCBozaVnYX2iCnr3bLM3fIes1/ej7h1YdOKuKt/MLs706TVnALA65w==}
-
-  docx-templates@4.15.0:
-    resolution: {integrity: sha512-H0JEDFVCF5j64Do9fqHVWwF86MOWUnHhQ2dfGWy7C2o9yPwtbCT1pXpotE6165Px07fia1Ted1Xh1fj1UZ9u1g==}
-    engines: {node: '>=6'}
 
   docx@9.7.1:
     resolution: {integrity: sha512-ilXFf9Moz47ABjFpDiA5s1w9lpb4EFSp7+5iiJSbfyYDM+bpZdAgLlSr7fW4aXhVe/E+F6QCv0EvRVFEd5CsWg==}
@@ -6411,11 +6404,6 @@ snapshots:
   diff@4.0.4: {}
 
   dingbat-to-unicode@1.0.1: {}
-
-  docx-templates@4.15.0:
-    dependencies:
-      jszip: 3.10.1
-      sax: 1.3.0
 
   docx@9.7.1:
     dependencies:

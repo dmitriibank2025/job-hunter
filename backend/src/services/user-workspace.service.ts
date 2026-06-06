@@ -1,5 +1,4 @@
 import {
-    PrismaClient,
     UserJobStatus,
     ResumeBaseTarget,
     SubscriptionPlan,
@@ -11,10 +10,9 @@ import path from "path";
 import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
 import { hashPassword, verifyPassword } from "./password.service";
+import { prisma } from "../infrastructure/prisma";
 import { getStorageRoot } from "./file-storage.service";
 import { BasicResumePdfTemplate, createBasicResumePdf } from "./resume-pdf.service";
-
-const prisma = new PrismaClient();
 
 export type PlanLimit = {
     vacanciesPerDay: number;

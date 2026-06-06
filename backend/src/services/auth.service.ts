@@ -1,10 +1,9 @@
 import crypto from "crypto";
-import { PrismaClient, SubscriptionPlan, UserRole } from "@prisma/client";
+import { SubscriptionPlan, UserRole } from "@prisma/client";
 import { HttpError } from "../errorHandler/http-error";
+import { prisma } from "../infrastructure/prisma";
 import { hashPassword, verifyPassword } from "./password.service";
 import { PLAN_LIMITS } from "./user-workspace.service";
-
-const prisma = new PrismaClient();
 
 const ACCESS_TOKEN_TTL_SECONDS = Number(process.env.ACCESS_TOKEN_TTL_SECONDS ?? 15 * 60);
 const REFRESH_TOKEN_TTL_DAYS = Number(process.env.REFRESH_TOKEN_TTL_DAYS ?? 30);

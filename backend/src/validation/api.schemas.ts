@@ -34,10 +34,6 @@ export const submitApplicationSchema = z.object({
     headless: z.boolean().optional(),
 });
 
-export const uploadResumeSchema = z.object({
-    resume: z.string().min(100),
-});
-
 export const automationRunSchema = z.object({
     userId: z.string().trim().uuid().optional(),
     resumeBaseId: z.string().trim().uuid().optional(),

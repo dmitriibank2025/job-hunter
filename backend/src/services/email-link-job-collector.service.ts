@@ -1,11 +1,10 @@
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../infrastructure/prisma";
 import { extractDescription, createProviderBrowser, newProviderPage, cleanJobTitle, filterRelevantJobs } from "../providers/browser-provider-utils";
 import { ParsedJob } from "../providers/types";
 import { createJobIfNew, normalizeJobUrl } from "./job-deduplication.service";
 import { extractUrls } from "./email-report.service";
 import { updateAutomationProgress } from "./job-automation-progress.service";
 
-const prisma = new PrismaClient();
 type EmailEvent = Awaited<ReturnType<typeof prisma.emailEvent.findMany>>[number];
 
 function reportLookbackDate(): Date {

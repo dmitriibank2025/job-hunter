@@ -1,7 +1,6 @@
-import { EmailEventType, Prisma, PrismaClient } from "@prisma/client";
+import { EmailEventType, Prisma } from "@prisma/client";
+import { prisma } from "../infrastructure/prisma";
 import { ParsedJob } from "../providers/types";
-
-const prisma = new PrismaClient();
 
 type AppliedVacancyStatus =
     | "ATTEMPTED"

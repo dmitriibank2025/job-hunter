@@ -1,4 +1,5 @@
-import { Job, Prisma, PrismaClient } from "@prisma/client";
+import { Job, Prisma } from "@prisma/client";
+import { prisma } from "../infrastructure/prisma";
 import { ParsedJob } from "../providers/types";
 
 type JobInput = Pick<
@@ -7,8 +8,6 @@ type JobInput = Pick<
 > & {
     source?: string;
 };
-
-const prisma = new PrismaClient();
 
 function normalizeText(value?: string | null): string {
     return (value ?? "")

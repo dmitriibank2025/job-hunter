@@ -1,7 +1,5 @@
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../infrastructure/prisma";
 import { ParsedJob } from "../providers/types";
-
-const prisma = new PrismaClient();
 
 export type CompanyPrioritySeed = {
     name: string;

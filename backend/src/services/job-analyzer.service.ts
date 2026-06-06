@@ -1,13 +1,11 @@
 import OpenAI from "openai";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../infrastructure/prisma";
 import {
     assertUserLimit,
     getWorkspaceCandidateProfile,
     recordUsageEvent,
     upsertUserJobMatch,
 } from "./user-workspace.service";
-
-const prisma = new PrismaClient();
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,

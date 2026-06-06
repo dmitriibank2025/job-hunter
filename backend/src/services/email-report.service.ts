@@ -1,8 +1,8 @@
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import { prisma } from "../infrastructure/prisma";
 import { isGmailConfigured, ParsedGmailMessage, searchGmailMessages } from "./gmail-api.service";
 import { syncAppliedVacancyHistory } from "./applied-vacancy.service";
 
-const prisma = new PrismaClient();
 const EMAIL_EVENT_TYPES = [
     "NEW_JOB_ALERT",
     "APPLICATION_RECEIVED",

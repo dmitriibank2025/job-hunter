@@ -1,5 +1,6 @@
 import { JobProvider } from "../providers/job-provider";
-import { Job, PrismaClient } from "@prisma/client";
+import { Job } from "@prisma/client";
+import { prisma } from "../infrastructure/prisma";
 import { MockProvider } from "../providers/mock.provider";
 import { LinkedInProvider } from "../providers/linkedin.provider";
 import { createJobIfNew } from "./job-deduplication.service";
@@ -21,8 +22,6 @@ import {
     SearchPreferences,
 } from "./search-preferences.service";
 import { upsertUserJobMatch } from "./user-workspace.service";
-
-const prisma = new PrismaClient();
 
 function createProviderMap(options: { linkedInStorageStatePath?: string | null } = {}): Record<string, JobProvider> {
     return {

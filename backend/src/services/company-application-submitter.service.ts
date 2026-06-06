@@ -1,11 +1,10 @@
 import fs from "fs/promises";
-import { Application, PrismaClient } from "@prisma/client";
+import { Application } from "@prisma/client";
 import { chromium, Page } from "playwright";
+import { prisma } from "../infrastructure/prisma";
 import { generateApplicationPackageForJob } from "./resume-generator.service";
 import { hasAppliedVacancyForJob, upsertAppliedVacancy } from "./applied-vacancy.service";
 import { getWorkspaceCandidateProfile } from "./user-workspace.service";
-
-const prisma = new PrismaClient();
 
 type SubmitOptions = {
     userId?: string;
