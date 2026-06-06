@@ -1,0 +1,25 @@
+{
+  "name": "job-hunter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Job Hunter split frontend/backend workspace",
+  "scripts": {
+    "dev": "pnpm --filter job-hunter-backend run dev",
+    "dev:backend": "pnpm --filter job-hunter-backend run dev",
+    "dev:frontend": "pnpm --filter job-hunter-frontend run dev",
+    "build": "pnpm --filter job-hunter-backend run build && pnpm --filter job-hunter-frontend run build",
+    "build:backend": "pnpm --filter job-hunter-backend run build",
+    "build:frontend": "pnpm --filter job-hunter-frontend run build",
+    "start": "pnpm --filter job-hunter-backend run start",
+    "start:backend": "pnpm --filter job-hunter-backend run start",
+    "typecheck": "pnpm --filter job-hunter-backend run typecheck && pnpm --filter job-hunter-frontend run typecheck",
+    "prisma:generate": "pnpm --filter job-hunter-backend run prisma:generate",
+    "prisma:migrate:deploy": "pnpm --filter job-hunter-backend run prisma:migrate:deploy",
+    "gmail:auth-url": "pnpm --filter job-hunter-backend run gmail:auth-url",
+    "gmail:exchange-code": "pnpm --filter job-hunter-backend run gmail:exchange-code",
+    "glassdoor:auth": "pnpm --filter job-hunter-backend run glassdoor:auth",
+    "linkedin:auth": "pnpm --filter job-hunter-backend run linkedin:auth",
+    "linkedin:recommended": "pnpm --filter job-hunter-backend run linkedin:recommended",
+    "test": "pnpm run typecheck"
+  }
+}

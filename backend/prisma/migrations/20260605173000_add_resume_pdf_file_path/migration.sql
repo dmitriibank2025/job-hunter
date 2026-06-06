@@ -1,0 +1,1 @@
+ALTER TABLE "ResumeVersion" ADD COLUMN IF NOT EXISTS "pdfFilePath" TEXT;

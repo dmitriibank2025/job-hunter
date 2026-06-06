@@ -1,0 +1,56 @@
+node_modules/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+backend/dist/
+frontend/dist/
+generated/
+/generated/prisma/
+public/
+!frontend/public/
+frontend/public/*
+!frontend/public/runtime-config.js
+
+# Runtime storage: browser auth, cookies, generated resumes, PDFs, DOCX files
+storage/
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Logs and temporary files
+*.log
+tmp/
+coverage/
+playwright-report/
+test-results/
+
+# Local/generated project notes with personal resume data; keep deploy docs explicit instead.
+AUTOMATION_WORKFLOW_COMPLETE.md
+DEPLOYMENT_CHECKLIST.md
+DONE_RESUME_FORMAT.md
+FILTERING_LOGIC.md
+FINAL_REPORT.md
+FIXES.md
+FORMAT_UPDATE_FINAL.md
+INDEX.md
+README_READY.md
+RESUME_EXAMPLES_BEFORE_AFTER.md
+RESUME_FORMAT_COMPLETE.md
+RESUME_FORMAT_UPDATE.md
+RESUME_GENERATION_SYSTEM.md
+RESUME_QUALITY_CHECKLIST.md
+RESUME_QUICK_START.md
+START_HERE.md
+SUMMARY_OF_CHANGES.md
+TECHNICAL_ARCHITECTURE.md
+WORKFLOW_FINAL.md
+WORKFLOW_VERIFICATION.md
+НОВАЯ_СИСТЕМА_README.md
+backend/templates/CV_Dmitrii_Bank_FSD.docx

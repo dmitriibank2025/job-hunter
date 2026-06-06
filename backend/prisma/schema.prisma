@@ -1,0 +1,443 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "darwin"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum SubscriptionPlan {
+  FREE
+  PRO
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+enum ResumeBaseTarget {
+  FRONTEND
+  BACKEND
+  FULLSTACK
+  CUSTOM
+}
+
+enum UsageEventType {
+  VACANCY_COLLECTED
+  RESUME_GENERATED
+  COVER_LETTER_GENERATED
+  OPENAI_TOKENS
+  SEARCH_RUN
+}
+
+model AppUser {
+  id        String           @id @default(uuid())
+  email     String           @unique
+  role      UserRole         @default(USER)
+  plan      SubscriptionPlan @default(FREE)
+  status    SubscriptionStatus @default(ACTIVE)
+  passwordHash String?
+
+  profile         UserProfile?
+  technologies    UserTechnology[]
+  experiences     UserExperience[]
+  educations       UserEducation[]
+  resumeBases      UserResumeBase[]
+  linkedinAccounts UserLinkedInAccount[]
+  usageEvents      UserUsageEvent[]
+  generatedResumes ResumeVersion[]
+  generatedCoverLetters CoverLetter[]
+  refreshTokens   AuthRefreshToken[]
+  jobMatches      UserJobMatch[]
+  applications    Application[]
+  emailEvents     EmailEvent[]
+  appliedVacancies AppliedVacancy[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([plan, status])
+  @@index([createdAt])
+}
+
+model AuthRefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, expiresAt])
+}
+
+model UserProfile {
+  id        String  @id @default(uuid())
+  userId    String  @unique
+  user      AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  fullName  String
+  location  String?
+  phone     String?
+  email     String
+  linkedin  String?
+  github    String?
+  portfolio String?
+  resumeFilePath String?
+  languages String[] @default([])
+  summary   String?  @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model UserTechnology {
+  id       String  @id @default(uuid())
+  userId   String
+  user     AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name     String
+  category String
+  level    String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, name])
+  @@index([category])
+}
+
+model UserExperience {
+  id          String  @id @default(uuid())
+  userId      String
+  user        AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company     String
+  title       String
+  location    String?
+  startDate   String
+  endDate     String?
+  project     String?
+  description String? @db.Text
+  bullets     String[] @default([])
+  technologies String[] @default([])
+  sortOrder   Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, sortOrder])
+}
+
+model UserEducation {
+  id          String  @id @default(uuid())
+  userId      String
+  user        AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  institution String
+  program     String
+  location    String?
+  startDate   String?
+  endDate     String?
+  details     String[] @default([])
+  sortOrder   Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, sortOrder])
+}
+
+model UserResumeBase {
+  id          String           @id @default(uuid())
+  userId      String
+  user        AppUser          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  target      ResumeBaseTarget @default(FULLSTACK)
+  targetTitle String?
+  content     String           @db.Text
+  isDefault   Boolean          @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, target])
+}
+
+model UserLinkedInAccount {
+  id                String  @id @default(uuid())
+  userId            String
+  user              AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email             String
+  passwordSecretRef String?
+  storageStatePath  String?
+  note              String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model UserUsageEvent {
+  id        String         @id @default(uuid())
+  userId    String
+  user      AppUser        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      UsageEventType
+  amount    Int            @default(1)
+  metadata  Json?
+  createdAt DateTime       @default(now())
+
+  @@index([userId, type, createdAt])
+  @@index([createdAt])
+}
+
+model Job {
+  id          String    @id @default(uuid())
+  title       String
+  company     String?
+  location    String?
+  url         String?
+  normalizedUrl String? @unique
+  fingerprint String? @unique
+  postedAt    DateTime?
+  description String
+  source      String?
+  status      JobStatus @default(NEW)
+
+  resumeVersions ResumeVersion[]
+  coverLetters   CoverLetter[]
+  applications   Application[]
+  userMatches    UserJobMatch[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model UserJobMatch {
+  id          String   @id @default(uuid())
+  userId      String
+  user        AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId       String
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  status      UserJobStatus @default(NEW)
+  matchScore  Int?
+  analysis    Json?
+  matchedAt   DateTime?
+  appliedAt   DateTime?
+  ignoredAt   DateTime?
+  notes       String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, jobId])
+  @@index([userId, matchScore])
+  @@index([userId, appliedAt])
+  @@index([userId, status, updatedAt])
+}
+
+enum UserJobStatus {
+  NEW
+  ANALYZED
+  SAVED
+  REJECTED
+  APPLIED
+  IGNORED
+}
+
+enum JobStatus {
+  NEW
+  ANALYZED
+  SAVED
+  REJECTED
+  APPLIED
+}
+
+enum ApplicationStatus {
+  READY
+  SUBMITTING
+  SUBMITTED
+  FAILED
+  NEEDS_REVIEW
+}
+
+model CandidateProfile {
+  id       String  @id @default(uuid())
+  fullName String
+  email    String
+  linkedin String?
+  github   String?
+  resume   String  @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ResumeVersion {
+  id    String @id @default(uuid())
+  jobId String
+  job   Job    @relation(fields: [jobId], references: [id])
+  userId String
+  user   AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  content  String
+  format   String  @default("markdown")
+  filePath String?
+  pdfFilePath String?
+
+  applications Application[]
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model CoverLetter {
+  id    String @id @default(uuid())
+  jobId String
+  job   Job    @relation(fields: [jobId], references: [id])
+  userId String
+  user   AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  content String
+  filePath String?
+
+  applications Application[]
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model Application {
+  id              String            @id @default(uuid())
+  userId          String
+  user            AppUser           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId           String
+  job             Job               @relation(fields: [jobId], references: [id])
+  resumeVersionId String
+  resumeVersion   ResumeVersion     @relation(fields: [resumeVersionId], references: [id])
+  coverLetterId   String?
+  coverLetter     CoverLetter?      @relation(fields: [coverLetterId], references: [id])
+
+  status          ApplicationStatus @default(READY)
+  submitUrl       String?
+  autoSubmit      Boolean           @default(false)
+  formSnapshot    Json?
+  error           String?
+  submittedAt     DateTime?
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([userId, status, createdAt])
+  @@index([userId, jobId])
+}
+
+enum EmailEventType {
+  NEW_JOB_ALERT
+  APPLICATION_RECEIVED
+  APPLICATION_VIEWED
+  RECRUITER_MESSAGE
+  ACTION_REQUIRED
+  REJECTION
+  POSITIVE_RESPONSE
+  OTHER
+}
+
+model EmailEvent {
+  id             String         @id @default(uuid())
+  userId         String
+  user           AppUser        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gmailMessageId String
+  gmailThreadId  String?
+  type           EmailEventType @default(OTHER)
+  source         String?
+  subject        String
+  from           String?
+  snippet        String?
+  bodyPreview    String?        @db.Text
+  url            String?
+  emailTs        DateTime
+  labels         String[]       @default([])
+  raw            Json?
+
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([userId, gmailMessageId])
+  @@index([userId, type, emailTs])
+  @@index([userId, emailTs])
+}
+
+enum AppliedVacancyStatus {
+  ATTEMPTED
+  APPLIED
+  APPLICATION_RECEIVED
+  APPLICATION_VIEWED
+  RECRUITER_MESSAGE
+  ACTION_REQUIRED
+  REJECTION
+  POSITIVE_RESPONSE
+}
+
+model AppliedVacancy {
+  id          String               @id @default(uuid())
+  userId      String
+  user        AppUser              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fingerprint String
+  title       String
+  company     String
+  status      AppliedVacancyStatus
+  source      String
+  jobUrl      String?
+  emailSubject String?
+  emailFrom    String?
+  firstSeenAt DateTime            @default(now())
+  lastSeenAt  DateTime            @default(now())
+  raw         Json?
+
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@unique([userId, fingerprint])
+  @@index([userId, company, title])
+  @@index([userId, status, lastSeenAt])
+}
+
+model CompanyPriorityTarget {
+  id                String    @id @default(uuid())
+  name              String    @unique
+  normalizedName    String    @unique
+  locationHint      String?
+  careerUrl         String?
+  priority          Int       @default(50)
+  active            Boolean   @default(false)
+  sourceHits        Int       @default(0)
+  centerHits        Int       @default(0)
+  totalJobsFound    Int       @default(0)
+  checksCount       Int       @default(0)
+  consecutiveNoJobs Int       @default(0)
+  lastFoundAt       DateTime?
+  lastCheckedAt     DateTime?
+  nextCheckAt       DateTime?
+  lastSource        String?
+  lastError         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([active, priority])
+  @@index([nextCheckAt])
+  @@index([lastFoundAt])
+}

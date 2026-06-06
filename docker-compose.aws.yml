@@ -1,0 +1,37 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: job-hunter-backend:local
+    environment:
+      NODE_ENV: production
+      SERVE_FRONTEND: "false"
+      PORT: 4000
+      STORAGE_DIR: /app/storage
+      DATABASE_URL: ${DATABASE_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      ACTIVE_PROVIDERS: ${ACTIVE_PROVIDERS:-LINKEDIN,CENTER_ISRAEL}
+      JOB_REPORT_CRON: ${JOB_REPORT_CRON:-0 9 * * *}
+      JOB_REPORT_TIMEZONE: ${JOB_REPORT_TIMEZONE:-Asia/Jerusalem}
+      DAILY_JOB_REPORT_ENABLED: ${DAILY_JOB_REPORT_ENABLED:-true}
+    ports:
+      - "4000:4000"
+    volumes:
+      - backend_storage:/app/storage
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: job-hunter-frontend:local
+    environment:
+      JOB_HUNTER_API_BASE_URL: ${JOB_HUNTER_API_BASE_URL:-http://localhost:4000}
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  backend_storage:
