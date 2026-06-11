@@ -5,7 +5,7 @@ import { prisma } from "../infrastructure/prisma";
 import { hashPassword, verifyPassword } from "./password.service";
 import { PLAN_LIMITS } from "./user-workspace.service";
 
-const ACCESS_TOKEN_TTL_SECONDS = Number(process.env.ACCESS_TOKEN_TTL_SECONDS ?? 15 * 60);
+const ACCESS_TOKEN_TTL_SECONDS = Number(process.env.ACCESS_TOKEN_TTL_SECONDS ?? 24 * 60 * 60);
 const REFRESH_TOKEN_TTL_DAYS = Number(process.env.REFRESH_TOKEN_TTL_DAYS ?? 30);
 
 type AccessTokenPayload = {

@@ -23,9 +23,15 @@ import {
 } from "./search-preferences.service";
 import { upsertUserJobMatch } from "./user-workspace.service";
 
-function createProviderMap(options: { linkedInStorageStatePath?: string | null } = {}): Record<string, JobProvider> {
+function createProviderMap(options: {
+    linkedInStorageStatePath?: string | null;
+    preferences?: SearchPreferences;
+} = {}): Record<string, JobProvider> {
     return {
-        LINKEDIN: new LinkedInProvider({ storageStatePath: options.linkedInStorageStatePath }),
+        LINKEDIN: new LinkedInProvider({
+            storageStatePath: options.linkedInStorageStatePath,
+            preferences: options.preferences,
+        }),
         GREENHOUSE: new GreenhouseProvider(),
         GLASSDOOR: new GlassdoorProvider(),
         DRUSHIM: new DrushimProvider(),
@@ -37,7 +43,10 @@ function createProviderMap(options: { linkedInStorageStatePath?: string | null }
     };
 }
 
-function activeProviders(providerNames?: string[], options: { linkedInStorageStatePath?: string | null } = {}): JobProvider[] {
+function activeProviders(providerNames?: string[], options: {
+    linkedInStorageStatePath?: string | null;
+    preferences?: SearchPreferences;
+} = {}): JobProvider[] {
     const providerMap = createProviderMap(options);
     const configured = providerNames?.length
         ? providerNames.join(",")
@@ -48,6 +57,7 @@ function activeProviders(providerNames?: string[], options: { linkedInStorageSta
         .filter(Boolean);
 
     return names
+        .filter((name) => name !== "LINKEDIN" || options.linkedInStorageStatePath !== null)
         .filter((name) => name !== "MOCK" || process.env.ENABLE_MOCK_PROVIDER === "true")
         .map((name) => providerMap[name])
         .filter((provider): provider is JobProvider => Boolean(provider));
@@ -85,6 +95,7 @@ type CollectJobsOptions = {
     providerNames?: string[];
     preferences?: SearchPreferences;
     userId?: string;
+    allowGlobalLinkedInFallback?: boolean;
 };
 
 export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job[] & { preferenceFilterStats?: SearchPreferenceFilterStats }> {
@@ -92,9 +103,8 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
 
      try {
          const linkedInAccount = options.userId
-             ? await prisma.userLinkedInAccount.findFirst({
+             ? await prisma.userLinkedInAccount.findUnique({
                  where: { userId: options.userId },
-                 orderBy: { updatedAt: "desc" },
              })
              : null;
          const preferences = normalizeSearchPreferences(options.preferences);
@@ -107,9 +117,22 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
              requiredTech: 0,
              dateRange: 0,
          };
+         const linkedInStorageStatePath = options.userId
+             ? linkedInAccount?.isActive
+                 ? linkedInAccount.storageStatePath
+                 : options.allowGlobalLinkedInFallback
+                     ? undefined
+                     : null
+             : undefined;
+
+         if (options.userId && !linkedInAccount?.isActive && !options.allowGlobalLinkedInFallback) {
+             console.warn("[Job Collector] LinkedIn is not connected for this user; LINKEDIN provider will be skipped.");
+         }
+
          // Log active providers
          const providers = activeProviders(options.providerNames, {
-             linkedInStorageStatePath: linkedInAccount?.storageStatePath,
+             linkedInStorageStatePath,
+             preferences,
          });
          console.log(`\n[Job Collector] Active Providers (${providers.length}):`);
          for (const provider of providers) {
@@ -133,6 +156,12 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
                      },
                  });
                  const jobs = await searchWithTimeout(provider);
+                 if (provider.source === "LINKEDIN" && options.userId && linkedInAccount?.isActive) {
+                     await prisma.userLinkedInAccount.update({
+                         where: { userId: options.userId },
+                         data: { lastUsedAt: new Date() },
+                     });
+                 }
                  const relevant = filterRelevantJobs(jobs);
                  const { jobs: filtered, stats } = filterJobsBySearchPreferences(relevant, preferences);
                  preferenceFilterStats.input += stats.input;

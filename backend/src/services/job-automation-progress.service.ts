@@ -41,6 +41,7 @@ export type AutomationProgressState = {
 };
 
 const DEFAULT_TOTAL_STEPS = 5;
+const MAX_HISTORY_SIZE = 100;
 
 const state: AutomationProgressState = {
     running: false,
@@ -71,8 +72,8 @@ function pushHistory(stage: string, message: string, percent: number) {
         percent,
     });
 
-    if (state.history.length > 40) {
-        state.history = state.history.slice(-40);
+    if (state.history.length > MAX_HISTORY_SIZE) {
+        state.history = state.history.slice(-MAX_HISTORY_SIZE);
     }
 }
 
@@ -98,6 +99,9 @@ export function startAutomationProgress(totalSteps = DEFAULT_TOTAL_STEPS) {
     pushHistory(state.stage, state.message, state.percent);
 }
 
+let updateTimeout: NodeJS.Timeout | null = null;
+let pendingUpdate: { stage: string; message: string; percent: number } | null = null;
+
 export function updateAutomationProgress(input: {
     stage: string;
     message: string;
@@ -111,24 +115,68 @@ export function updateAutomationProgress(input: {
     matchedJobs?: number;
     providerStatus?: ProviderProgressStatus | null;
 }) {
+    // Мгновенно обновляем критичные поля
     state.stage = input.stage;
     state.message = input.message;
-    state.percent = Math.max(0, Math.min(100, input.percent ?? state.percent));
-    state.currentStep = input.currentStep ?? state.currentStep;
-    state.currentTarget = input.currentTarget ?? state.currentTarget;
-    state.completedTargets = input.completedTargets ?? state.completedTargets;
-    state.totalTargets = input.totalTargets ?? state.totalTargets;
-    state.companiesScanned = input.companiesScanned ?? state.companiesScanned;
-    state.careerPagesFound = input.careerPagesFound ?? state.careerPagesFound;
-    state.matchedJobs = input.matchedJobs ?? state.matchedJobs;
+
+    if (input.percent !== undefined) {
+        state.percent = Math.max(0, Math.min(100, input.percent));
+    }
+    if (input.currentStep !== undefined) {
+        state.currentStep = input.currentStep;
+    }
+    if (input.currentTarget !== undefined) {
+        state.currentTarget = input.currentTarget;
+    }
+    if (input.completedTargets !== undefined) {
+        state.completedTargets = input.completedTargets;
+    }
+    if (input.totalTargets !== undefined) {
+        state.totalTargets = input.totalTargets;
+    }
+    if (input.companiesScanned !== undefined) {
+        state.companiesScanned = input.companiesScanned;
+    }
+    if (input.careerPagesFound !== undefined) {
+        state.careerPagesFound = input.careerPagesFound;
+    }
+    if (input.matchedJobs !== undefined) {
+        state.matchedJobs = input.matchedJobs;
+    }
     if ("providerStatus" in input) {
         state.providerStatus = input.providerStatus ?? null;
     }
+
     state.updatedAt = new Date();
-    pushHistory(state.stage, state.message, state.percent);
+
+    // Дебаунсинг для истории
+    if (updateTimeout) {
+        clearTimeout(updateTimeout);
+    }
+
+    // Сохраняем текущие значения с гарантией, что они не undefined
+    pendingUpdate = {
+        stage: state.stage,
+        message: state.message,
+        percent: state.percent
+    };
+
+    updateTimeout = setTimeout(() => {
+        if (pendingUpdate) {
+            // Теперь все поля гарантированно имеют тип string и number
+            pushHistory(pendingUpdate.stage, pendingUpdate.message, pendingUpdate.percent);
+            pendingUpdate = null;
+        }
+        updateTimeout = null;
+    }, 100);
 }
 
 export function finishAutomationProgress(message: string) {
+    if (updateTimeout) {
+        clearTimeout(updateTimeout);
+        updateTimeout = null;
+    }
+
     state.running = false;
     state.stage = "Complete";
     state.message = message;
@@ -137,9 +185,16 @@ export function finishAutomationProgress(message: string) {
     state.updatedAt = new Date();
     state.finishedAt = new Date();
     pushHistory(state.stage, state.message, state.percent);
+
+    pendingUpdate = null;
 }
 
 export function failAutomationProgress(error: string) {
+    if (updateTimeout) {
+        clearTimeout(updateTimeout);
+        updateTimeout = null;
+    }
+
     state.running = false;
     state.stage = "Failed";
     state.message = error;
@@ -147,10 +202,22 @@ export function failAutomationProgress(error: string) {
     state.updatedAt = new Date();
     state.finishedAt = new Date();
     pushHistory(state.stage, state.message, state.percent);
+
+    pendingUpdate = null;
 }
 
+let cachedProgress: AutomationProgressState | null = null;
+let lastCacheInvalidation = 0;
+const CACHE_TTL_MS = 500;
+
 export function getAutomationProgress(): AutomationProgressState {
-    return {
+    const now = Date.now();
+
+    if (cachedProgress && (now - lastCacheInvalidation) < CACHE_TTL_MS) {
+        return cachedProgress;
+    }
+
+    cachedProgress = {
         ...state,
         startedAt: state.startedAt ? new Date(state.startedAt) : null,
         updatedAt: state.updatedAt ? new Date(state.updatedAt) : null,
@@ -160,4 +227,14 @@ export function getAutomationProgress(): AutomationProgressState {
             at: new Date(entry.at),
         })),
     };
+
+    lastCacheInvalidation = now;
+
+    return cachedProgress;
+}
+
+// Функция для сброса кеша (полезно при тестировании)
+export function resetAutomationProgressCache() {
+    cachedProgress = null;
+    lastCacheInvalidation = 0;
 }

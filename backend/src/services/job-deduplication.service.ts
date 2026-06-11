@@ -82,6 +82,47 @@ export async function findDuplicateJob(job: JobInput): Promise<Job | null> {
     });
 }
 
+// Batch deduplication для ускорения массовой обработки
+export async function findDuplicateJobsBatch(jobs: JobInput[]): Promise<Map<string, Job>> {
+    if (jobs.length === 0) return new Map();
+
+    const normalizedUrls = jobs
+        .map(j => normalizeJobUrl(j.url))
+        .filter((url): url is string => url !== null);
+
+    const fingerprints = jobs
+        .map(j => buildJobFingerprint(j))
+        .filter((fp): fp is string => fp !== null);
+
+    const duplicates = await prisma.job.findMany({
+        where: {
+            OR: [
+                ...(normalizedUrls.length > 0 ? [{ normalizedUrl: { in: normalizedUrls } }] : []),
+                ...(normalizedUrls.length > 0 ? [{ url: { in: normalizedUrls } }] : []),
+                ...(fingerprints.length > 0 ? [{ fingerprint: { in: fingerprints } }] : []),
+            ],
+        },
+    });
+
+    const result = new Map<string, Job>();
+
+    for (const job of jobs) {
+        const normalizedUrl = normalizeJobUrl(job.url);
+        const fingerprint = buildJobFingerprint(job);
+
+        const duplicate = duplicates.find(d =>
+            (normalizedUrl && (d.normalizedUrl === normalizedUrl || d.url === job.url)) ||
+            (fingerprint && d.fingerprint === fingerprint)
+        );
+
+        if (duplicate) {
+            result.set(job.url || fingerprint || "", duplicate);
+        }
+    }
+
+    return result;
+}
+
 export async function createJobIfNew(job: JobInput): Promise<{
     job: Job;
     isNew: boolean;
@@ -152,4 +193,30 @@ export async function createJobIfNew(job: JobInput): Promise<{
 
         throw error;
     }
+}
+
+// Batch создание для ускорения массового импорта
+export async function createJobsBatch(jobs: JobInput[]): Promise<{
+    created: Job[];
+    duplicates: Job[];
+}> {
+    const duplicateMap = await findDuplicateJobsBatch(jobs);
+
+    const newJobs = jobs.filter(job => !duplicateMap.has(job.url || buildJobFingerprint(job) || ""));
+
+    const created: Job[] = [];
+    const duplicates: Job[] = [];
+
+    // Создаем новые вакансии батчами для ускорения
+    for (let i = 0; i < newJobs.length; i += 50) {
+        const batch = newJobs.slice(i, i + 50);
+        const createdBatch = await prisma.$transaction(
+            batch.map(job => prisma.job.create({ data: buildJobCreateData(job) }))
+        );
+        created.push(...createdBatch);
+    }
+
+    duplicates.push(...Array.from(duplicateMap.values()));
+
+    return { created, duplicates };
 }

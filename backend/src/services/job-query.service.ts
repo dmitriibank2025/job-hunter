@@ -2,6 +2,40 @@ import { prisma } from "../infrastructure/prisma";
 import { analyzeJob } from "./job-analyzer.service";
 import { ensureUserJobMatchesForUserArtifacts } from "./user-job-repair.service";
 
+// Конфигурация параллельной обработки
+const ANALYSIS_CONCURRENCY = parseInt(process.env.ANALYSIS_CONCURRENCY || "5", 10);
+
+async function processBatch<T, R>(
+    items: T[],
+    processor: (item: T, index: number) => Promise<R>,
+    concurrency: number
+): Promise<{ results: R[]; errors: { item: T; error: string }[] }> {
+    const results: R[] = [];
+    const errors: { item: T; error: string }[] = [];
+
+    for (let i = 0; i < items.length; i += concurrency) {
+        const batch = items.slice(i, i + concurrency);
+        const batchPromises = batch.map((item, idx) =>
+            processor(item, i + idx).then(
+                result => ({ success: true as const, result, item }),
+                error => ({ success: false as const, error: error.message, item })
+            )
+        );
+
+        const batchResults = await Promise.all(batchPromises);
+
+        for (const res of batchResults) {
+            if (res.success) {
+                results.push(res.result);
+            } else {
+                errors.push({ item: res.item, error: res.error });
+            }
+        }
+    }
+
+    return { results, errors };
+}
+
 export async function analyzeMissingUserJobs(userId: string, resumeBaseId?: string) {
     await ensureUserJobMatchesForUserArtifacts(userId);
 
@@ -16,19 +50,26 @@ export async function analyzeMissingUserJobs(userId: string, resumeBaseId?: stri
         include: { job: true },
     });
 
-    const results = [];
+    console.log(`[AnalyzeMissing] Found ${matches.length} jobs to analyze (concurrency: ${ANALYSIS_CONCURRENCY})`);
 
-    for (const match of matches) {
-        try {
-            const result = await analyzeJob(match.job.id, { userId, resumeBaseId });
-            results.push(result);
-        } catch (error) {
-            console.error(error);
-        }
+    const processor = async (match: typeof matches[0], index: number) => {
+        console.log(`  ├─ Analyzing ${index + 1}/${matches.length}: ${match.job.title}`);
+        return await analyzeJob(match.job.id, { userId, resumeBaseId });
+    };
+
+    const { results, errors } = await processBatch(matches, processor, ANALYSIS_CONCURRENCY);
+
+    if (errors.length > 0) {
+        console.error(`[AnalyzeMissing] Failed to analyze ${errors.length} jobs:`);
+        errors.forEach(e => console.error(`  ├─ ${(e.item as any).job.title}: ${e.error}`));
     }
+
+    console.log(`[AnalyzeMissing] Complete: ${results.length} analyzed, ${errors.length} failed`);
 
     return {
         analyzed: results.length,
+        failed: errors.length,
+        results,
     };
 }
 

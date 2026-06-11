@@ -12,6 +12,7 @@ import mammoth from "mammoth";
 import { hashPassword, verifyPassword } from "./password.service";
 import { prisma } from "../infrastructure/prisma";
 import { getStorageRoot } from "./file-storage.service";
+import { linkedInStorageStatePathForUser, validateLinkedInStorageStatePath } from "./linkedin-account.service";
 import { BasicResumePdfTemplate, createBasicResumePdf } from "./resume-pdf.service";
 
 export type PlanLimit = {
@@ -37,10 +38,10 @@ export const PLAN_LIMITS: Record<SubscriptionPlan, PlanLimit> = {
         priorityCompanyInsights: false,
     },
     PRO: {
-        vacanciesPerDay: 300,
-        generatedResumesPerMonth: 100,
+        vacanciesPerDay: 300_000,
+        generatedResumesPerMonth: 100_000,
         baseResumes: 10,
-        searchRunsPerDay: 30,
+        searchRunsPerDay: 300_000,
         tokenBudgetPerMonth: 3_000_000,
         resumeAdvice: "full",
         statistics: "full",
@@ -208,7 +209,7 @@ export const LANGUAGE_OPTIONS = [
 ] as const;
 
 export const LINKEDIN_ACCOUNT_NOTICE =
-    "Use a dedicated non-work LinkedIn account for automated search. Do not reuse an employer account. Store the password in a secrets manager and save only the secret reference in this application.";
+    "Use a dedicated non-work LinkedIn account for automated search. Do not reuse an employer account. This application stores only Playwright browser storage state and never stores LinkedIn passwords.";
 
 export type WorkspaceCandidateProfile = {
     fullName: string;
@@ -626,27 +627,46 @@ export async function replaceUserEducations(userId: string, educations: Educatio
 }
 
 export async function upsertLinkedInAccount(userId: string, input: {
-    email: string;
-    passwordSecretRef?: string;
+    email?: string;
+    profileUrl?: string;
     storageStatePath?: string;
-    note?: string;
 }) {
-    const existing = await prisma.userLinkedInAccount.findFirst({ where: { userId } });
+    const existing = await prisma.userLinkedInAccount.findUnique({ where: { userId } });
+    const storageStatePath = validateLinkedInStorageStatePath(
+        input.storageStatePath?.trim() || existing?.storageStatePath || linkedInStorageStatePathForUser(userId),
+    );
     const data = {
-        email: input.email.trim().toLowerCase(),
-        passwordSecretRef: input.passwordSecretRef?.trim() || null,
-        storageStatePath: input.storageStatePath?.trim() || null,
-        note: input.note?.trim() || LINKEDIN_ACCOUNT_NOTICE,
+        email: input.email?.trim().toLowerCase() || null,
+        profileUrl: input.profileUrl?.trim() || null,
+        storageStatePath,
+        connectedAt: new Date(),
+        isActive: true,
     };
 
     const account = existing
-        ? await prisma.userLinkedInAccount.update({ where: { id: existing.id }, data })
+        ? await prisma.userLinkedInAccount.update({ where: { userId }, data })
         : await prisma.userLinkedInAccount.create({ data: { userId, ...data } });
 
     return {
         ...account,
         notice: LINKEDIN_ACCOUNT_NOTICE,
     };
+}
+
+export async function updateUserDailyAutomationSettings(userId: string, input: {
+    enabled: boolean;
+    time: string;
+    timezone: string;
+}) {
+    return prisma.appUser.update({
+        where: { id: userId },
+        data: {
+            dailyAutomationEnabled: input.enabled,
+            dailyAutomationTime: input.time,
+            dailyAutomationTimezone: input.timezone,
+            dailyAutomationLastRunKey: input.enabled ? undefined : null,
+        },
+    });
 }
 
 export async function createUserResumeBase(userId: string, input: {
@@ -995,18 +1015,21 @@ function buildResumeContent(input: {
     targetTitle?: string;
 }) {
     const profile = input.profile;
-    const contacts = [
-        profile.location,
-        profile.phone,
-        profile.email,
-        profile.linkedin,
-        profile.github,
-        profile.portfolio,
+    const titleLine = [
+        input.targetTitle,
+        ...input.technologies.filter((technology) =>
+            /aws|node|typescript|nosql|postgres|redis|dynamodb|backend/i.test(technology),
+        ).slice(0, 4),
     ].filter(Boolean).join(" | ");
     const header = [
-        `# ${profile.fullName}`,
-        input.targetTitle ? `## ${input.targetTitle}` : "",
-        contacts,
+        `# ${profile.fullName.toUpperCase()}`,
+        profile.location ?? "",
+        titleLine,
+        profile.phone ? `Phone: ${profile.phone}` : "",
+        profile.linkedin ? `LinkedIn: ${profile.linkedin}` : "",
+        profile.email ? `Email: ${profile.email}` : "",
+        profile.github ? `GitHub: ${profile.github}` : "",
+        profile.portfolio ? `Portfolio: ${profile.portfolio}` : "",
         profile.languages?.length ? `Languages: ${profile.languages.join(", ")}` : "",
     ].filter(Boolean).join("\n");
 
@@ -1029,7 +1052,7 @@ function buildResumeContent(input: {
 
     return [
         header,
-        section("Professional Summary", [profile.summary ?? ""]),
+        profile.summary ?? "",
         section("Skills", [skills]),
         section("Experience", experience),
         section("Education", education),

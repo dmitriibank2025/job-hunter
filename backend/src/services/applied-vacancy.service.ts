@@ -1,6 +1,7 @@
 import { EmailEventType, Prisma } from "@prisma/client";
 import { prisma } from "../infrastructure/prisma";
 import { ParsedJob } from "../providers/types";
+import { recordPositiveOutcome, recordRejection } from "./prompt-learning.service";
 
 type AppliedVacancyStatus =
     | "ATTEMPTED"
@@ -298,9 +299,52 @@ export async function syncAppliedVacanciesFromEmails(userId: string) {
         });
 
         if (result) createdOrUpdated += 1;
+
+        if (!result || (status !== "REJECTION" && status !== "POSITIVE_RESPONSE")) continue;
+
+        const job = await findMatchingUserJob(userId, title, company, event.url);
+        if (!job) continue;
+
+        if (status === "REJECTION") {
+            await recordRejection({
+                userId,
+                jobId: job.id,
+                reason: "OTHER",
+                employerFeedback: [event.subject, event.bodyPreview].filter(Boolean).join("\n\n").slice(0, 1_500),
+                occurredAt: event.emailTs,
+            });
+        } else {
+            await recordPositiveOutcome(userId, job.id);
+        }
     }
 
     return createdOrUpdated;
+}
+
+async function findMatchingUserJob(userId: string, title: string, company: string, url?: string | null) {
+    const fingerprint = buildAppliedVacancyFingerprint(title, company);
+    const or: Prisma.JobWhereInput[] = [
+        {
+            title: { equals: title, mode: Prisma.QueryMode.insensitive },
+            company: { equals: company, mode: Prisma.QueryMode.insensitive },
+        },
+    ];
+    if (url) or.unshift({ url });
+
+    const candidates = await prisma.job.findMany({
+        where: {
+            OR: or,
+            userMatches: {
+                some: { userId },
+            },
+        },
+        take: 10,
+    });
+
+    return candidates.find((job) =>
+        buildAppliedVacancyFingerprint(job.title, job.company) === fingerprint ||
+        Boolean(url && job.url === url),
+    );
 }
 
 export async function syncAppliedVacanciesFromLocalApplications(userId: string) {

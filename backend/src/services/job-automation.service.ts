@@ -82,6 +82,10 @@ const NEEDS_REPLY_STATUSES = new Set([
 ]);
 const ANSWERED_REPORT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+// Конфигурация параллельной обработки
+const ANALYSIS_CONCURRENCY = parseInt(process.env.ANALYSIS_CONCURRENCY || "5", 10);
+const GENERATION_CONCURRENCY = parseInt(process.env.GENERATION_CONCURRENCY || "3", 10);
+
 function formatDate(date: Date): string {
     return new Intl.DateTimeFormat("en-GB", {
         dateStyle: "medium",
@@ -118,131 +122,126 @@ function buildFollowUpSection(entries: FollowUpEntry[], title: string): string {
 }
 
 function buildAutomationMessage(
-     collectedAt: Date,
-     newJobs: Job[],
-     analyzedJobs: AnalyzedJob[],
-     generatedResumes: GeneratedResume[],
-     generatedCoverLetters: GeneratedCoverLetter[],
-     skippedJobs: Array<{job: Job; reason: string}>,
-     failedResumes: Array<{job: Job; error: string}>,
-     failedAnalysis: string[],
-     emailReportMessage: string | null,
-     followUp: JobAutomationReport["followUp"],
+    collectedAt: Date,
+    newJobs: Job[],
+    analyzedJobs: AnalyzedJob[],
+    generatedResumes: GeneratedResume[],
+    generatedCoverLetters: GeneratedCoverLetter[],
+    skippedJobs: Array<{job: Job; reason: string}>,
+    failedResumes: Array<{job: Job; error: string}>,
+    failedAnalysis: string[],
+    emailReportMessage: string | null,
+    followUp: JobAutomationReport["followUp"],
 ): string {
-     const sections: string[] = [
-         "📋 JOB HUNTER AUTOMATION REPORT",
-         `⏰ Time: ${formatDate(collectedAt)}`,
-         "",
-         "════════════════════════════════════",
-     ];
+    const sections: string[] = [
+        "📋 JOB HUNTER AUTOMATION REPORT",
+        `⏰ Time: ${formatDate(collectedAt)}`,
+        "",
+        "════════════════════════════════════",
+    ];
 
-     // Summary stats
-     sections.push(
-         `📊 SUMMARY`,
-         `├─ Jobs Found: ${newJobs.length}`,
-         `├─ Resumes Generated: ${generatedResumes.length}`,
-         `├─ Cover Letters Generated: ${generatedCoverLetters.length}`,
-         `├─ Skipped (Low Score/Not Match): ${skippedJobs.length}`,
-         `├─ Failed Resumes: ${failedResumes.length}`,
-         `├─ Failed Analysis: ${failedAnalysis.length}`,
-         "",
-     );
+    sections.push(
+        `📊 SUMMARY`,
+        `├─ Jobs Found: ${newJobs.length}`,
+        `├─ Resumes Generated: ${generatedResumes.length}`,
+        `├─ Cover Letters Generated: ${generatedCoverLetters.length}`,
+        `├─ Skipped (Low Score/Not Match): ${skippedJobs.length}`,
+        `├─ Failed Resumes: ${failedResumes.length}`,
+        `├─ Failed Analysis: ${failedAnalysis.length}`,
+        "",
+    );
 
-     // Generated resumes with submission info
-     if (generatedResumes.length > 0) {
-         sections.push(
-             `✅ RESUMES GENERATED (${generatedResumes.length})`,
-             "",
-         );
+    if (generatedResumes.length > 0) {
+        sections.push(
+            `✅ RESUMES GENERATED (${generatedResumes.length})`,
+            "",
+        );
 
-         for (let i = 0; i < generatedResumes.length; i++) {
-             const resume = generatedResumes[i];
-             const job = analyzedJobs.find(j => j.id === resume.jobId) ??
-                 newJobs.find(j => j.id === resume.jobId);
-             
-             if (job) {
-                 const analyzedJob = analyzedJobs.find(j => j.id === job.id);
-                 const score = analyzedJob?.matchScore == null ? "Not analyzed" : `${analyzedJob.matchScore}/100`;
-                 sections.push(
-                     `${i + 1}. ${job.title} @ ${job.company}`,
-                     `   📍 Score: ${score}`,
-                     `   🔗 Job: ${job.url || "No URL"}`,
-                     `   📄 Resume: storage/resumes/*/*.md`,
-                     `   💼 DOCX: storage/resumes/*/*.docx`,
-                     ``,
-                     `   HOW TO APPLY:`,
-                     `   Option 1: Manual (Recommended)`,
-                     `     • Open job URL: ${job.url}`,
-                     `     • Copy resume from file: storage/resumes/*/*.md`,
-                     `     • Paste into application form`,
-                     ``,
-                     `   Option 2: Direct Link`,
-                     `     • Upload DOCX file: storage/resumes/*/*.docx`,
-                     ``,
-                 );
-             }
-         }
-         sections.push("");
-     }
+        for (let i = 0; i < generatedResumes.length; i++) {
+            const resume = generatedResumes[i];
+            const job = analyzedJobs.find(j => j.id === resume.jobId) ??
+                newJobs.find(j => j.id === resume.jobId);
 
-     // Skipped jobs explanation
-     if (skippedJobs.length > 0) {
-         const limit = 5;
-         const shown = skippedJobs.slice(0, limit);
-         const omitted = Math.max(skippedJobs.length - limit, 0);
+            if (job) {
+                const analyzedJob = analyzedJobs.find(j => j.id === job.id);
+                const score = analyzedJob?.matchScore == null ? "Not analyzed" : `${analyzedJob.matchScore}/100`;
+                sections.push(
+                    `${i + 1}. ${job.title} @ ${job.company}`,
+                    `   📍 Score: ${score}`,
+                    `   🔗 Job: ${job.url || "No URL"}`,
+                    `   📄 Resume: storage/resumes/*/*.md`,
+                    `   💼 DOCX: storage/resumes/*/*.docx`,
+                    ``,
+                    `   HOW TO APPLY:`,
+                    `   Option 1: Manual (Recommended)`,
+                    `     • Open job URL: ${job.url}`,
+                    `     • Copy resume from file: storage/resumes/*/*.md`,
+                    `     • Paste into application form`,
+                    ``,
+                    `   Option 2: Direct Link`,
+                    `     • Upload DOCX file: storage/resumes/*/*.docx`,
+                    ``,
+                );
+            }
+        }
+        sections.push("");
+    }
 
-         sections.push(
-             `⊘ SKIPPED (Not Matching) (${skippedJobs.length})`,
-             "",
-         );
+    if (skippedJobs.length > 0) {
+        const limit = 5;
+        const shown = skippedJobs.slice(0, limit);
+        const omitted = Math.max(skippedJobs.length - limit, 0);
 
-         for (let i = 0; i < shown.length; i++) {
-             const {job, reason} = shown[i];
-             sections.push(
-                 `${i + 1}. ${job.title} @ ${job.company}`,
-                 `   Reason: ${reason}`,
-             );
-         }
+        sections.push(
+            `⊘ SKIPPED (Not Matching) (${skippedJobs.length})`,
+            "",
+        );
 
-         if (omitted > 0) {
-             sections.push(`\n...and ${omitted} more skipped jobs`);
-         }
-         sections.push("");
-     }
+        for (let i = 0; i < shown.length; i++) {
+            const {job, reason} = shown[i];
+            sections.push(
+                `${i + 1}. ${job.title} @ ${job.company}`,
+                `   Reason: ${reason}`,
+            );
+        }
 
-     // Failed resumes
-     if (failedResumes.length > 0) {
-         sections.push(
-             `❌ FAILED RESUMES (${failedResumes.length})`,
-             "",
-         );
+        if (omitted > 0) {
+            sections.push(`\n...and ${omitted} more skipped jobs`);
+        }
+        sections.push("");
+    }
 
-         for (const {job, error} of failedResumes.slice(0, 3)) {
-             sections.push(
-                 `• ${job.title} @ ${job.company}`,
-                 `  Error: ${error}`,
-             );
-         }
-         sections.push("");
-     }
+    if (failedResumes.length > 0) {
+        sections.push(
+            `❌ FAILED RESUMES (${failedResumes.length})`,
+            "",
+        );
 
-     // Follow-up section
-     sections.push(
-         buildFollowUpSection(followUp.needsReply, "🔔 NEED REPLY (Active Applications)"),
-         "",
-         buildFollowUpSection(followUp.answered, "✅ ANSWERED (Application Status, last 24h)"),
-         "",
-     );
+        for (const {job, error} of failedResumes.slice(0, 3)) {
+            sections.push(
+                `• ${job.title} @ ${job.company}`,
+                `  Error: ${error}`,
+            );
+        }
+        sections.push("");
+    }
 
-     if (emailReportMessage) {
-         sections.push(
-             "📧 EMAIL REPORT",
-             emailReportMessage,
-         );
-     }
+    sections.push(
+        buildFollowUpSection(followUp.needsReply, "🔔 NEED REPLY (Active Applications)"),
+        "",
+        buildFollowUpSection(followUp.answered, "✅ ANSWERED (Application Status, last 24h)"),
+        "",
+    );
 
-     return sections.join("\n");
- }
+    if (emailReportMessage) {
+        sections.push(
+            "📧 EMAIL REPORT",
+            emailReportMessage,
+        );
+    }
+
+    return sections.join("\n");
+}
 
 function toFollowUpEntry(vacancy: {
     title: string;
@@ -296,12 +295,50 @@ export async function runJobAutomationWorkflow(searchLocation?: string): Promise
     return runJobAutomationWorkflowWithSource({ searchLocation, sourceMode: "PROVIDERS" });
 }
 
+// Параллельная обработка с ограничением конкурентности
+async function processBatch<T, R>(
+    items: T[],
+    processor: (item: T, index: number) => Promise<R>,
+    concurrency: number,
+    onProgress?: (processed: number, total: number) => void
+): Promise<{ results: R[]; errors: { item: T; error: string }[] }> {
+    const results: R[] = [];
+    const errors: { item: T; error: string }[] = [];
+
+    for (let i = 0; i < items.length; i += concurrency) {
+        const batch = items.slice(i, i + concurrency);
+        const batchPromises = batch.map((item, idx) =>
+            processor(item, i + idx).then(
+                result => ({ success: true as const, result, item }),
+                error => ({ success: false as const, error: error.message, item })
+            )
+        );
+
+        const batchResults = await Promise.all(batchPromises);
+
+        for (const res of batchResults) {
+            if (res.success) {
+                results.push(res.result);
+            } else {
+                errors.push({ item: res.item, error: res.error });
+            }
+        }
+
+        if (onProgress) {
+            onProgress(Math.min(i + concurrency, items.length), items.length);
+        }
+    }
+
+    return { results, errors };
+}
+
 export async function runJobAutomationWorkflowWithSource(options: {
     searchLocation?: string;
     sourceMode?: JobAutomationSourceMode;
     preferences?: SearchPreferences;
     userId?: string;
     resumeBaseId?: string;
+    allowGlobalLinkedInFallback?: boolean;
 }): Promise<JobAutomationReport> {
     const { searchLocation, sourceMode = "PROVIDERS" } = options;
     const { userId, resumeBaseId } = options;
@@ -351,12 +388,25 @@ export async function runJobAutomationWorkflowWithSource(options: {
             percent: sourceMode === "EMAIL" ? 30 : 20,
             currentStep: sourceMode === "EMAIL" ? 3 : 1,
         });
+
         const providerJobs = sourceMode === "PROVIDERS"
-            ? await collectJobs({ searchLocation, preferences, userId })
+            ? await collectJobs({
+                searchLocation,
+                preferences,
+                userId,
+                allowGlobalLinkedInFallback: options.allowGlobalLinkedInFallback,
+            })
             : sourceMode === "CENTER_ISRAEL"
-                ? await collectJobs({ searchLocation, providerNames: ["CENTER_ISRAEL"], preferences, userId })
+                ? await collectJobs({
+                    searchLocation,
+                    providerNames: ["CENTER_ISRAEL"],
+                    preferences,
+                    userId,
+                    allowGlobalLinkedInFallback: options.allowGlobalLinkedInFallback,
+                })
                 : [];
-        const providerPreferenceStats = providerJobs.preferenceFilterStats;
+
+        const providerPreferenceStats = (providerJobs as any).preferenceFilterStats;
         const preferenceFilterStats: SearchPreferenceFilterStats = {
             input: emailPreferenceStats.input + (providerPreferenceStats?.input ?? 0),
             output: emailPreferenceStats.output + (providerPreferenceStats?.output ?? 0),
@@ -366,29 +416,36 @@ export async function runJobAutomationWorkflowWithSource(options: {
             requiredTech: emailPreferenceStats.requiredTech + (providerPreferenceStats?.requiredTech ?? 0),
             dateRange: emailPreferenceStats.dateRange + (providerPreferenceStats?.dateRange ?? 0),
         };
+
         const collectedJobs = dedupeJobs([...emailLinkJobs, ...providerJobs]);
         const collectedAllowance = await getVacancyCollectionAllowance(userId);
         const newJobs = collectedJobs.slice(0, collectedAllowance);
         const collectedSkippedByPlan = Math.max(collectedJobs.length - newJobs.length, 0);
+
         if (newJobs.length > 0) {
             await recordUsageEvent(userId, "VACANCY_COLLECTED", newJobs.length, {
                 sourceMode,
                 searchLocation,
             });
         }
+
         console.log(`[Job Automation] Collected ${emailLinkJobs.length} jobs from email links`);
         console.log(`[Job Automation] Collected ${newJobs.length} new unique jobs (after deduplication)`);
         if (collectedSkippedByPlan > 0) {
             console.log(`[Job Automation] Skipped ${collectedSkippedByPlan} jobs because of plan vacancy limit`);
         }
 
-        console.log(`\n[Job Automation] Starting analysis of ${newJobs.length} jobs...`);
-        const analyzedJobs: AnalyzedJob[] = [];
-        const failedAnalysis: string[] = [];
+        // ПАРАЛЛЕЛЬНЫЙ АНАЛИЗ
+        console.log(`\n[Job Automation] Starting parallel analysis of ${newJobs.length} jobs (concurrency: ${ANALYSIS_CONCURRENCY})...`);
 
-        for (let index = 0; index < newJobs.length; index++) {
-            const job = newJobs[index];
+        updateAutomationProgress({
+            stage: "Analyzing",
+            message: `Starting parallel analysis of ${newJobs.length} jobs...`,
+            percent: 30,
+            currentStep: 3,
+        });
 
+        const analysisProcessor = async (job: Job, index: number): Promise<AnalyzedJob> => {
             updateAutomationProgress({
                 stage: "Analyzing",
                 message: `Analyzing ${index + 1}/${newJobs.length}: ${job.title}`,
@@ -396,70 +453,113 @@ export async function runJobAutomationWorkflowWithSource(options: {
                 currentStep: 3,
             });
 
-            try {
-                console.log(`  ├─ Analyzing: "${job.title}" at ${job.company}`);
-                const analyzed = await analyzeJob(job.id, { userId, resumeBaseId });
-                if (userId) {
-                    await upsertUserJobMatch(userId, job.id, {
-                        matchScore: analyzed.matchScore,
-                        analysis: analyzed.analysis,
-                    });
-                }
-                analyzedJobs.push(analyzed);
-                console.log(
-                    `  │  Score: ${analyzed.matchScore}/100 | Recommendation: ${(analyzed.analysis as any)?.recommendation}`,
-                );
-            } catch (error) {
-                failedAnalysis.push(job.title);
-                console.error(`  ├─ ✗ Analysis failed for "${job.title}":`, (error as any).message);
+            console.log(`  ├─ Analyzing: "${job.title}" at ${job.company}`);
+            const analyzed = await analyzeJob(job.id, { userId, resumeBaseId });
+
+            if (userId) {
+                await upsertUserJobMatch(userId, job.id, {
+                    matchScore: analyzed.matchScore,
+                    analysis: analyzed.analysis,
+                });
             }
-        }
 
-        console.log(`\n[Job Automation] Starting resume generation...`);
-        const generatedResumes: GeneratedResume[] = [];
-        const generatedCoverLetters: GeneratedCoverLetter[] = [];
-        const skippedJobs: Array<{ job: Job; reason: string }> = [];
-        const failedResumes: Array<{ job: Job; error: string }> = [];
+            console.log(
+                `  │  Score: ${analyzed.matchScore}/100 | Recommendation: ${(analyzed.analysis as any)?.recommendation}`,
+            );
 
-        for (let index = 0; index < analyzedJobs.length; index++) {
-            const job = analyzedJobs[index];
+            return analyzed;
+        };
+
+        const { results: analyzedJobs, errors: analysisErrors } = await processBatch(
+            newJobs,
+            analysisProcessor,
+            ANALYSIS_CONCURRENCY,
+            (processed, total) => {
+                updateAutomationProgress({
+                    stage: "Analyzing",
+                    message: `Analyzed ${processed}/${total} jobs`,
+                    percent: 30 + Math.round((processed / total) * 35),
+                    currentStep: 3,
+                });
+            }
+        );
+
+        const failedAnalysis = analysisErrors.map(e => (e.item as Job).title);
+
+        console.log(`[Job Automation] Analysis complete: ${analyzedJobs.length}/${newJobs.length} succeeded, ${failedAnalysis.length} failed`);
+
+        // ПАРАЛЛЕЛЬНАЯ ГЕНЕРАЦИЯ
+        console.log(`\n[Job Automation] Starting parallel resume generation (concurrency: ${GENERATION_CONCURRENCY})...`);
+
+        updateAutomationProgress({
+            stage: "Generating",
+            message: "Starting parallel resume generation...",
+            percent: 65,
+            currentStep: 4,
+        });
+
+        // Сначала фильтруем, какие вакансии нужно обрабатывать
+        const jobsToGenerate = analyzedJobs.filter(job => {
             const recommendation = (job.analysis as any)?.recommendation;
+            if (SKIP_RECOMMENDATIONS.has(recommendation)) {
+                console.log(`  ├─ ⊘ Skipped: "${job.title}" (Recommendation: ${recommendation})`);
+                return false;
+            }
+            if (job.matchScore && job.matchScore < requiredMatchScore) {
+                console.log(`  ├─ ⊘ Skipped: "${job.title}" (Score: ${job.matchScore}/${requiredMatchScore})`);
+                return false;
+            }
+            return true;
+        });
 
+        const skippedJobs = analyzedJobs.filter(job => !jobsToGenerate.includes(job)).map(job => ({
+            job: job as Job,
+            reason: (job.analysis as any)?.recommendation === "SKIP"
+                ? `Recommendation: SKIP`
+                : `Score ${job.matchScore} < ${requiredMatchScore}`
+        }));
+
+        const generationProcessor = async (job: AnalyzedJob, index: number): Promise<{ resume: GeneratedResume; coverLetter: GeneratedCoverLetter }> => {
             updateAutomationProgress({
                 stage: "Generating",
-                message: `Generating resume ${index + 1}/${analyzedJobs.length}: ${job.title}`,
-                percent: 65 + Math.round((index / Math.max(analyzedJobs.length, 1)) * 20),
+                message: `Generating ${index + 1}/${jobsToGenerate.length}: ${job.title}`,
+                percent: 65 + Math.round((index / Math.max(jobsToGenerate.length, 1)) * 20),
                 currentStep: 4,
             });
 
-            if (SKIP_RECOMMENDATIONS.has(recommendation)) {
-                skippedJobs.push({ job, reason: `Recommendation: ${recommendation}` });
-                console.log(`  ├─ ⊘ Skipped: "${job.title}" (Recommendation: ${recommendation})`);
-                continue;
-            }
+            console.log(`  ├─ ✓ Generating resume and cover letter for: "${job.title}"`);
+            const [resume, coverLetter] = await Promise.all([
+                generateResumeForJob(job.id, { userId, resumeBaseId }),
+                generateCoverLetterForJob(job.id, { userId, resumeBaseId }),
+            ]);
 
-            if (job.matchScore && job.matchScore < requiredMatchScore) {
-                skippedJobs.push({ job, reason: `Score ${job.matchScore} < ${requiredMatchScore}` });
-                console.log(`  ├─ ⊘ Skipped: "${job.title}" (Score: ${job.matchScore}/${requiredMatchScore})`);
-                continue;
-            }
+            console.log(
+                `  │  Resume saved to: ${resume.filePath ? path.relative(process.cwd(), resume.filePath) : "unknown path"}`,
+            );
 
-            try {
-                console.log(`  ├─ ✓ Generating resume and cover letter for: "${job.title}"`);
-                const [resume, coverLetter] = await Promise.all([
-                    generateResumeForJob(job.id, { userId, resumeBaseId }),
-                    generateCoverLetterForJob(job.id, { userId, resumeBaseId }),
-                ]);
-                generatedResumes.push(resume);
-                generatedCoverLetters.push(coverLetter);
-                console.log(
-                    `  │  Resume saved to: ${resume.filePath ? path.relative(process.cwd(), resume.filePath) : "unknown path"}`,
-                );
-            } catch (error) {
-                failedResumes.push({ job, error: (error as any).message });
-                console.error(`  ├─ ✗ Resume generation failed for "${job.title}":`, (error as any).message);
+            return { resume, coverLetter };
+        };
+
+        const { results: generationResults, errors: generationErrors } = await processBatch(
+            jobsToGenerate,
+            generationProcessor,
+            GENERATION_CONCURRENCY,
+            (processed, total) => {
+                updateAutomationProgress({
+                    stage: "Generating",
+                    message: `Generated ${processed}/${total} resumes`,
+                    percent: 65 + Math.round((processed / total) * 20),
+                    currentStep: 4,
+                });
             }
-        }
+        );
+
+        const generatedResumes = generationResults.map(r => r.resume);
+        const generatedCoverLetters = generationResults.map(r => r.coverLetter);
+        const failedResumes = generationErrors.map(e => ({
+            job: e.item as Job,
+            error: e.error
+        }));
 
         updateAutomationProgress({
             stage: "Follow-up",
@@ -509,6 +609,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
             percent: 94,
             currentStep: 5,
         });
+
         console.log(`\n[Job Automation] Sending Telegram notification...`);
         const telegramSent = await sendTelegramMessage(message);
         if (telegramSent) {
@@ -555,4 +656,4 @@ export async function runJobAutomationWorkflowWithSource(options: {
         failAutomationProgress(error instanceof Error ? error.message : "Automation failed.");
         throw error;
     }
- }
+}

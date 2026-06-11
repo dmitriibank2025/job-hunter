@@ -124,6 +124,10 @@ function matchesLocation(job: SearchableJob, locations: string[]): boolean {
     return matchesAny(locationText, locations) || (allowsRemote && isRemoteJob);
 }
 
+function hasDetailedDescription(job: SearchableJob): boolean {
+    return job.description.trim().length >= 160;
+}
+
 export function filterJobsBySearchPreferences<T extends SearchableJob>(
     jobs: T[],
     preferences: SearchPreferences = {},
@@ -161,7 +165,7 @@ export function filterJobsBySearchPreferences<T extends SearchableJob>(
             continue;
         }
 
-        if (requiredTech.length && !matchesAny(text, requiredTech)) {
+        if (requiredTech.length && hasDetailedDescription(job) && !matchesAny(text, requiredTech)) {
             stats.requiredTech++;
             continue;
         }
