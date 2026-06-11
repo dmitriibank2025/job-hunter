@@ -138,10 +138,9 @@ export const updateUserResumeBaseSchema = z.object({
 });
 
 export const linkedinAccountSchema = z.object({
-    email: z.string().trim().email(),
-    passwordSecretRef: z.string().trim().optional(),
+    email: z.string().trim().email().optional(),
+    profileUrl: z.string().trim().url().optional(),
     storageStatePath: z.string().trim().optional(),
-    note: z.string().trim().optional(),
     password: z.string().optional(),
 });
 
@@ -153,6 +152,12 @@ export const userActionSchema = z.object({
 export const uploadedResumeFileSchema = z.object({
     fileName: z.string().trim().min(1).regex(/\.(pdf|docx)$/i, "Upload a PDF or DOCX file."),
     base64Content: z.string().min(100),
+});
+
+export const userDailyAutomationSchema = z.object({
+    enabled: z.boolean(),
+    time: z.string().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:mm time format."),
+    timezone: z.string().trim().min(2).default("Asia/Jerusalem"),
 });
 
 export const userJobMatchSchema = z.object({

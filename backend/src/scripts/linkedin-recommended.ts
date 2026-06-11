@@ -4,7 +4,7 @@ import path from "path";
 import { chromium, Page } from "playwright";
 
 const LINKEDIN_LOGIN_URL = "https://www.linkedin.com/login";
-const LINKEDIN_RECOMMENDED_URL = "https://www.linkedin.com/jobs/search/?geoId=101620260&keywords=Full%20Stack&origin=JOB_SEARCH_PAGE_SEARCH_BUTTON&refresh=true";
+const LINKEDIN_RECOMMENDED_URL = "https://www.linkedin.com/jobs/collections/recommended";
 const STORAGE_STATE_PATH = process.env.LINKEDIN_STORAGE_STATE ??
     path.join(process.cwd(), "storage", "linkedin_auth.json");
 const OUTPUT_PATH = process.env.LINKEDIN_RECOMMENDED_OUTPUT ??
@@ -27,7 +27,10 @@ async function pathExists(filePath: string): Promise<boolean> {
 async function saveSession() {
     await fs.mkdir(path.dirname(STORAGE_STATE_PATH), { recursive: true });
 
-    const browser = await chromium.launch({ headless: false });
+    const browser = await chromium.launch({
+        headless: false,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
     const context = await browser.newContext();
     const page = await context.newPage();
 
@@ -141,6 +144,7 @@ async function extractRecommendedJobs() {
 
     const browser = await chromium.launch({
         headless: process.env.LINKEDIN_HEADLESS !== "false",
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
     const context = await browser.newContext({
         storageState: STORAGE_STATE_PATH,

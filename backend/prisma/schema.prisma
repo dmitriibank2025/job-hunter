@@ -4,7 +4,7 @@
 // Get a free hosted Postgres database in seconds: `npx create-db`
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
   binaryTargets = ["native", "darwin"]
 }
 
@@ -45,27 +45,33 @@ enum UsageEventType {
 }
 
 model AppUser {
-  id        String           @id @default(uuid())
-  email     String           @unique
-  role      UserRole         @default(USER)
-  plan      SubscriptionPlan @default(FREE)
-  status    SubscriptionStatus @default(ACTIVE)
+  id           String             @id @default(uuid())
+  email        String             @unique
+  role         UserRole           @default(USER)
+  plan         SubscriptionPlan   @default(FREE)
+  status       SubscriptionStatus @default(ACTIVE)
   passwordHash String?
+  dailyAutomationEnabled Boolean @default(false)
+  dailyAutomationTime    String  @default("09:00")
+  dailyAutomationTimezone String @default("Asia/Jerusalem")
+  dailyAutomationLastRunKey String?
 
-  profile         UserProfile?
-  technologies    UserTechnology[]
-  experiences     UserExperience[]
-  educations       UserEducation[]
-  resumeBases      UserResumeBase[]
-  linkedinAccounts UserLinkedInAccount[]
-  usageEvents      UserUsageEvent[]
-  generatedResumes ResumeVersion[]
+  profile               UserProfile?
+  technologies          UserTechnology[]
+  experiences           UserExperience[]
+  educations            UserEducation[]
+  resumeBases           UserResumeBase[]
+  linkedinAccounts      UserLinkedInAccount[]
+  usageEvents           UserUsageEvent[]
+  generatedResumes      ResumeVersion[]
   generatedCoverLetters CoverLetter[]
-  refreshTokens   AuthRefreshToken[]
-  jobMatches      UserJobMatch[]
-  applications    Application[]
-  emailEvents     EmailEvent[]
-  appliedVacancies AppliedVacancy[]
+  refreshTokens         AuthRefreshToken[]
+  jobMatches            UserJobMatch[]
+  applications          Application[]
+  emailEvents           EmailEvent[]
+  appliedVacancies      AppliedVacancy[]
+  rejectionRecords      RejectionRecord[]
+  promptRules           PromptRule[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -75,32 +81,32 @@ model AppUser {
 }
 
 model AuthRefreshToken {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
-  user      AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tokenHash String   @unique
+  user      AppUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   @@index([userId, expiresAt])
 }
 
 model UserProfile {
-  id        String  @id @default(uuid())
-  userId    String  @unique
-  user      AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id     String  @id @default(uuid())
+  userId String  @unique
+  user   AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  fullName  String
-  location  String?
-  phone     String?
-  email     String
-  linkedin  String?
-  github    String?
-  portfolio String?
+  fullName       String
+  location       String?
+  phone          String?
+  email          String
+  linkedin       String?
+  github         String?
+  portfolio      String?
   resumeFilePath String?
-  languages String[] @default([])
-  summary   String?  @db.Text
+  languages      String[] @default([])
+  summary        String?  @db.Text
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -121,19 +127,19 @@ model UserTechnology {
 }
 
 model UserExperience {
-  id          String  @id @default(uuid())
-  userId      String
-  user        AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
-  company     String
-  title       String
-  location    String?
-  startDate   String
-  endDate     String?
-  project     String?
-  description String? @db.Text
-  bullets     String[] @default([])
+  id           String   @id @default(uuid())
+  userId       String
+  user         AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company      String
+  title        String
+  location     String?
+  startDate    String
+  endDate      String?
+  project      String?
+  description  String?  @db.Text
+  bullets      String[] @default([])
   technologies String[] @default([])
-  sortOrder   Int @default(0)
+  sortOrder    Int      @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -142,16 +148,16 @@ model UserExperience {
 }
 
 model UserEducation {
-  id          String  @id @default(uuid())
+  id          String   @id @default(uuid())
   userId      String
-  user        AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
   institution String
   program     String
   location    String?
   startDate   String?
   endDate     String?
   details     String[] @default([])
-  sortOrder   Int @default(0)
+  sortOrder   Int      @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -176,18 +182,21 @@ model UserResumeBase {
 }
 
 model UserLinkedInAccount {
-  id                String  @id @default(uuid())
-  userId            String
-  user              AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
-  email             String
-  passwordSecretRef String?
-  storageStatePath  String?
-  note              String? @db.Text
+  id               String    @id @default(uuid())
+  userId           String
+  user             AppUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email            String?
+  profileUrl       String?
+  storageStatePath String
+  connectedAt      DateTime  @default(now())
+  lastUsedAt       DateTime?
+  isActive         Boolean   @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([userId])
+  @@unique([userId])
+  @@index([isActive])
 }
 
 model UserUsageEvent {
@@ -204,42 +213,46 @@ model UserUsageEvent {
 }
 
 model Job {
-  id          String    @id @default(uuid())
-  title       String
-  company     String?
-  location    String?
-  url         String?
-  normalizedUrl String? @unique
-  fingerprint String? @unique
-  postedAt    DateTime?
-  description String
-  source      String?
-  status      JobStatus @default(NEW)
+  id            String    @id @default(uuid())
+  externalJobId String?
+  title         String
+  company       String?
+  location      String?
+  url           String?
+  normalizedUrl String?   @unique
+  fingerprint   String?   @unique
+  postedAt      DateTime?
+  description   String
+  source        String?
+  status        JobStatus @default(NEW)
 
-  resumeVersions ResumeVersion[]
-  coverLetters   CoverLetter[]
-  applications   Application[]
-  userMatches    UserJobMatch[]
+  resumeVersions   ResumeVersion[]
+  coverLetters     CoverLetter[]
+  applications     Application[]
+  userMatches      UserJobMatch[]
+  rejectionRecords RejectionRecord[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@unique([source, externalJobId])
 }
 
 model UserJobMatch {
-  id          String   @id @default(uuid())
-  userId      String
-  user        AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobId       String
-  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  status      UserJobStatus @default(NEW)
-  matchScore  Int?
-  analysis    Json?
-  matchedAt   DateTime?
-  appliedAt   DateTime?
-  ignoredAt   DateTime?
-  notes       String?  @db.Text
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String        @id @default(uuid())
+  userId     String
+  user       AppUser       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId      String
+  job        Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  status     UserJobStatus @default(NEW)
+  matchScore Int?
+  analysis   Json?
+  matchedAt  DateTime?
+  appliedAt  DateTime?
+  ignoredAt  DateTime?
+  notes      String?       @db.Text
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
 
   @@unique([userId, jobId])
   @@index([userId, matchScore])
@@ -273,15 +286,15 @@ enum ApplicationStatus {
 }
 
 model ResumeVersion {
-  id    String @id @default(uuid())
-  jobId String
-  job   Job    @relation(fields: [jobId], references: [id])
+  id     String  @id @default(uuid())
+  jobId  String
+  job    Job     @relation(fields: [jobId], references: [id])
   userId String
   user   AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  content  String
-  format   String  @default("markdown")
-  filePath String?
+  content     String
+  format      String  @default("markdown")
+  filePath    String?
   pdfFilePath String?
 
   applications Application[]
@@ -292,13 +305,13 @@ model ResumeVersion {
 }
 
 model CoverLetter {
-  id    String @id @default(uuid())
-  jobId String
-  job   Job    @relation(fields: [jobId], references: [id])
+  id     String  @id @default(uuid())
+  jobId  String
+  job    Job     @relation(fields: [jobId], references: [id])
   userId String
   user   AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  content String
+  content  String
   filePath String?
 
   applications Application[]
@@ -309,25 +322,25 @@ model CoverLetter {
 }
 
 model Application {
-  id              String            @id @default(uuid())
+  id              String        @id @default(uuid())
   userId          String
-  user            AppUser           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user            AppUser       @relation(fields: [userId], references: [id], onDelete: Cascade)
   jobId           String
-  job             Job               @relation(fields: [jobId], references: [id])
+  job             Job           @relation(fields: [jobId], references: [id])
   resumeVersionId String
-  resumeVersion   ResumeVersion     @relation(fields: [resumeVersionId], references: [id])
+  resumeVersion   ResumeVersion @relation(fields: [resumeVersionId], references: [id])
   coverLetterId   String?
-  coverLetter     CoverLetter?      @relation(fields: [coverLetterId], references: [id])
+  coverLetter     CoverLetter?  @relation(fields: [coverLetterId], references: [id])
 
-  status          ApplicationStatus @default(READY)
-  submitUrl       String?
-  autoSubmit      Boolean           @default(false)
-  formSnapshot    Json?
-  error           String?
-  submittedAt     DateTime?
+  status       ApplicationStatus @default(READY)
+  submitUrl    String?
+  autoSubmit   Boolean           @default(false)
+  formSnapshot Json?
+  error        String?
+  submittedAt  DateTime?
 
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userId, status, createdAt])
   @@index([userId, jobId])
@@ -361,8 +374,8 @@ model EmailEvent {
   labels         String[]       @default([])
   raw            Json?
 
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([userId, gmailMessageId])
   @@index([userId, type, emailTs])
@@ -381,23 +394,23 @@ enum AppliedVacancyStatus {
 }
 
 model AppliedVacancy {
-  id          String               @id @default(uuid())
-  userId      String
-  user        AppUser              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  fingerprint String
-  title       String
-  company     String
-  status      AppliedVacancyStatus
-  source      String
-  jobUrl      String?
+  id           String               @id @default(uuid())
+  userId       String
+  user         AppUser              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fingerprint  String
+  title        String
+  company      String
+  status       AppliedVacancyStatus
+  source       String
+  jobUrl       String?
   emailSubject String?
   emailFrom    String?
-  firstSeenAt DateTime            @default(now())
-  lastSeenAt  DateTime            @default(now())
-  raw         Json?
+  firstSeenAt  DateTime             @default(now())
+  lastSeenAt   DateTime             @default(now())
+  raw          Json?
 
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([userId, fingerprint])
   @@index([userId, company, title])
@@ -428,4 +441,66 @@ model CompanyPriorityTarget {
   @@index([active, priority])
   @@index([nextCheckAt])
   @@index([lastFoundAt])
+}
+
+// ─── PROMPT LEARNING ──────────────────────────────────────────────────────────
+
+enum RejectionReasonType {
+  OVERQUALIFIED
+  UNDERQUALIFIED
+  WRONG_TECH_STACK
+  WRONG_SENIORITY
+  LOCATION_MISMATCH
+  COMPANY_TYPE_MISMATCH
+  SALARY_MISMATCH
+  NO_RESPONSE
+  OTHER
+}
+
+enum PromptRuleCategory {
+  SKILLS
+  SENIORITY
+  COMPANY_TYPE
+  LOCATION
+  GENERAL
+}
+
+model RejectionRecord {
+  id     String  @id @default(uuid())
+  userId String
+  user   AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId  String
+  job    Job     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  jobTitle   String
+  company    String
+  matchScore Int                 @default(0)
+  reason     String?             @db.Text // текст от работодателя или пользователя
+  reasonType RejectionReasonType @default(OTHER)
+  analysis   Json // снимок GPT-анализа на момент подачи
+  jobSnippet String              @db.Text // первые 1000 символов описания вакансии
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, reasonType])
+  @@index([jobId])
+}
+
+model PromptRule {
+  id     String  @id @default(uuid())
+  userId String
+  user   AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  rule         String             @db.Text // текст правила (1–2 предложения)
+  category     PromptRuleCategory @default(GENERAL)
+  confidence   Float              @default(0.5) // 0.0–1.0
+  appliedCount Int                @default(0) // сколько раз включался в промт
+  hitCount     Int                @default(0) // сколько раз подтверждён позитивным исходом
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, confidence(sort: Desc)])
+  @@index([userId, category])
 }

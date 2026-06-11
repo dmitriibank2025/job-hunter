@@ -14,6 +14,7 @@ import {
     createCandidateRouter,
     createEmailRouter,
     createJobsRouter,
+    createLinkedInRouter,
     createStorageRouter,
     createUsersRouter,
 } from "./routes";
@@ -47,6 +48,8 @@ export function createApp() {
     app.use("/candidate", createCandidateRouter());
     app.use("/email", createEmailRouter());
     app.use("/jobs", createJobsRouter());
+    app.use("/linkedin", createLinkedInRouter());
+    app.use("/api/linkedin", createLinkedInRouter());
 
     app.get("/plans", (_req, res) => {
         res.json({

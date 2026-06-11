@@ -6,6 +6,7 @@ import {
     listResumeBases,
     registerUser,
     updateEducations,
+    updateDailyAutomation,
     updateExperiences,
     updateLinkedInAccount,
     updateProfile,
@@ -25,6 +26,7 @@ export function createUsersRouter() {
     router.put("/:id/experiences", updateExperiences);
     router.put("/:id/educations", updateEducations);
     router.put("/:id/linkedin-account", updateLinkedInAccount);
+    router.put("/:id/daily-automation", updateDailyAutomation);
     router.post("/:id/resume-bases", createResumeBase);
     router.get("/:id/resume-bases", listResumeBases);
     router.put("/:id/resume-bases/:resumeBaseId", updateResumeBase);

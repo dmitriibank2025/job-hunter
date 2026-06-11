@@ -17,6 +17,7 @@ import { submitCompanyApplicationForJob } from "../services/company-application-
 import { listCompanyPriorityTargets } from "../services/company-priority.service";
 import { upsertUserJobMatch } from "../services/user-workspace.service";
 import { ensureUserJobMatchesForUserArtifacts } from "../services/user-job-repair.service";
+import { recordRejection } from "../services/prompt-learning.service";
 import {
     automationRunSchema,
     createJobSchema,
@@ -234,6 +235,15 @@ export async function updateUserMatch(req: Request, res: Response) {
     const input = userJobMatchSchema.parse(req.body ?? {});
     const userId = await requireUserIdFromRequest(req, input.userId);
     const userMatch = await upsertUserJobMatch(userId, jobId, input);
+
+    if (input.status === "REJECTED") {
+        await recordRejection({
+            userId,
+            jobId,
+            reason: "OTHER",
+            employerFeedback: input.notes,
+        });
+    }
 
     res.json({
         success: true,

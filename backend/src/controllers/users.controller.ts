@@ -12,6 +12,7 @@ import {
     replaceUserExperiences,
     replaceUserTechnologies,
     saveUploadedResume,
+    updateUserDailyAutomationSettings,
     updateUserResumeBase,
     upsertLinkedInAccount,
     upsertUserProfile,
@@ -22,6 +23,7 @@ import {
     updateUserResumeBaseSchema,
     uploadedResumeFileSchema,
     userEducationsSchema,
+    userDailyAutomationSchema,
     userExperiencesSchema,
     userProfileSchema,
     userResumeBaseSchema,
@@ -117,7 +119,7 @@ export async function updateLinkedInAccount(req: Request, res: Response) {
     if (input.password) {
         res.status(400).json({
             success: false,
-            message: "Raw LinkedIn passwords are not stored. Save the password in AWS Secrets Manager or another vault and provide passwordSecretRef.",
+            message: "Raw LinkedIn passwords are not stored. Connect LinkedIn through the browser session flow.",
             notice: LINKEDIN_ACCOUNT_NOTICE,
         });
         return;
@@ -128,6 +130,22 @@ export async function updateLinkedInAccount(req: Request, res: Response) {
     res.json({
         success: true,
         account,
+    });
+}
+
+export async function updateDailyAutomation(req: Request, res: Response) {
+    const userId = requiredParam(req, "id");
+    await requireUserAccess(req, userId);
+    const input = userDailyAutomationSchema.parse(req.body ?? {});
+    const user = await updateUserDailyAutomationSettings(userId, input);
+
+    res.json({
+        success: true,
+        dailyAutomation: {
+            enabled: user.dailyAutomationEnabled,
+            time: user.dailyAutomationTime,
+            timezone: user.dailyAutomationTimezone,
+        },
     });
 }
 
