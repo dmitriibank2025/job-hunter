@@ -168,7 +168,7 @@ function buildResumeInsights(content: string, input: {
     { label: "Skills section", done: input.selectedTech.size >= 5 || /## skills/i.test(content) },
     { label: "Experience", done: input.experiences.some((item) => item.company.trim() && item.title.trim()) },
     { label: "Education", done: input.educations.some((item) => item.institution.trim() || item.program.trim()) },
-    { label: "Keyword coverage", done: keywords.length ? matchedKeywords.length / keywords.length >= 0.6 : true },
+    { label: "Search keyword coverage", done: keywords.length ? matchedKeywords.length / keywords.length >= 0.6 : true },
   ];
   const completed = checks.filter((check) => check.done).length;
   const score = Math.round((completed / checks.length) * 100);
@@ -491,14 +491,14 @@ export function AccountView({
 
           <aside className="resume-advisor">
             <div className="resume-score-card">
-              <span>Resume Score</span>
+              <span>Base Resume Readiness</span>
               <strong>{resumeInsights.score}</strong>
-              <small>{resumeInsights.coverage}% keyword coverage</small>
+              <small>{resumeInsights.coverage}% search keyword coverage</small>
             </div>
             <div className="resume-checklist">
               {resumeInsights.checks.map((check) => (
                 <div className={check.done ? "is-done" : ""} key={check.label}>
-                  <span>{check.done ? "OK" : "Fix"}</span>
+                  <span>{check.done ? "Ready" : "Missing"}</span>
                   <strong>{check.label}</strong>
                 </div>
               ))}

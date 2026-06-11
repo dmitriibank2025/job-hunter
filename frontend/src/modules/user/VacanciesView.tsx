@@ -16,7 +16,7 @@ type VacanciesViewProps = {
   vacancyFilters: VacancyFilters;
   setVacancyFilters: (filters: VacancyFilters) => void;
   onSelectJob: (jobId: string) => void;
-  onMark: (jobId: string, patch: { applied?: boolean; ignored?: boolean }) => Promise<void>;
+  onMark: (jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string }) => Promise<void>;
   onDownload: (filePath?: string) => Promise<void>;
   onAnalyzeMissing: () => void;
   onGenerateResume: (jobId: string) => void;

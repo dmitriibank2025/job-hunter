@@ -16,7 +16,7 @@ type OverviewViewProps = {
   onNavigate: (view: View) => void;
   onRunSearch: () => void;
   onAnalyzeMissing: () => void;
-  onMark: (jobId: string, patch: { applied?: boolean; ignored?: boolean }) => Promise<void>;
+  onMark: (jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string }) => Promise<void>;
   onDownload: (filePath?: string) => Promise<void>;
 };
 

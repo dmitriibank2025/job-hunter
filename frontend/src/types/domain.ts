@@ -14,6 +14,9 @@ export type WorkspaceUser = {
   email: string;
   role?: "USER" | "ADMIN";
   plan: "FREE" | "PRO";
+  dailyAutomationEnabled?: boolean;
+  dailyAutomationTime?: string;
+  dailyAutomationTimezone?: string;
   limits?: PlanLimits;
   profile?: {
     fullName: string;
@@ -30,7 +33,14 @@ export type WorkspaceUser = {
   experiences?: ExperienceEntry[];
   educations?: EducationEntry[];
   resumeBases?: ResumeBase[];
-  linkedinAccounts?: Array<{ email: string; passwordSecretRef?: string; storageStatePath?: string }>;
+  linkedinAccounts?: Array<{
+    email?: string;
+    profileUrl?: string;
+    storageStatePath?: string;
+    connectedAt?: string;
+    lastUsedAt?: string;
+    isActive?: boolean;
+  }>;
 };
 
 export type AuthTokens = {
@@ -82,12 +92,25 @@ export type Job = {
   resumeVersions?: Array<{ id?: string; filePath?: string; pdfFilePath?: string | null; format?: string; createdAt?: string }>;
   coverLetters?: Array<{ id?: string; filePath?: string; createdAt?: string }>;
   userMatch?: {
+    status?: "NEW" | "ANALYZED" | "SAVED" | "REJECTED" | "APPLIED" | "IGNORED";
     matchScore?: number;
     analysis?: { recommendation?: string; reason?: string; matchedSkills?: string[]; missingSkills?: string[] };
     appliedAt?: string;
     ignoredAt?: string;
     notes?: string;
   };
+};
+
+export type AppliedVacancy = {
+  id: string;
+  title: string;
+  company: string;
+  status: "ATTEMPTED" | "APPLIED" | "APPLICATION_RECEIVED" | "APPLICATION_VIEWED" | "RECRUITER_MESSAGE" | "ACTION_REQUIRED" | "REJECTION" | "POSITIVE_RESPONSE";
+  source: string;
+  jobUrl?: string | null;
+  emailSubject?: string | null;
+  emailFrom?: string | null;
+  lastSeenAt: string;
 };
 
 export type DocumentItem = {

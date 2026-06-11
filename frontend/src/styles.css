@@ -1734,6 +1734,188 @@ input[type="file"] { cursor: pointer; }
 .search-explainer strong { font-size: 12.5px; color: var(--text-secondary); font-weight: 600; }
 .search-explainer span { display: block; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 
+.search-option-group {
+  display: grid;
+  gap: 8px;
+}
+
+.search-option-group > strong {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.search-option-group > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 138px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--glass-2) transparent;
+}
+
+.linkedin-search-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-md);
+  background: var(--glass-0);
+  padding: 12px 14px;
+}
+
+.linkedin-search-panel.is-connected {
+  border-color: rgba(74, 222, 128, 0.35);
+}
+
+.linkedin-search-panel.is-pending {
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+.linkedin-search-panel strong,
+.linkedin-search-panel span,
+.linkedin-search-panel small {
+  display: block;
+}
+
+.linkedin-search-panel span,
+.linkedin-search-panel small {
+  color: var(--text-muted);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* ─── INTEGRATIONS ───────────────────────────────────────── */
+.integration-panel {
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-md);
+  background: var(--glass-0);
+  padding: 16px;
+  display: grid;
+  gap: 16px;
+}
+
+.integration-panel h3 {
+  margin-top: 4px;
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.integration-status-grid {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 8px 14px;
+  align-items: baseline;
+}
+
+.integration-status-grid span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.integration-status-grid strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.application-history {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.application-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-md);
+  background: var(--glass-0);
+}
+
+.application-row strong,
+.application-row span,
+.application-row small {
+  display: block;
+}
+
+.application-row small {
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.application-row b {
+  display: block;
+  text-align: right;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+.application-row a {
+  display: block;
+  margin-top: 6px;
+  text-align: right;
+}
+
+.application-row.status-rejection {
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.application-row.status-positive_response,
+.application-row.status-recruiter_message {
+  border-color: rgba(74, 222, 128, 0.45);
+}
+
+.automation-settings {
+  display: grid;
+  gap: 16px;
+}
+
+.toggle-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-md);
+  background: var(--glass-0);
+}
+
+.toggle-row input {
+  margin-top: 3px;
+}
+
+.toggle-row strong,
+.toggle-row small {
+  display: block;
+}
+
+.toggle-row small {
+  color: var(--text-muted);
+  margin-top: 4px;
+  line-height: 1.45;
+}
+
+.error-text {
+  margin: 0;
+  color: var(--red);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 /* ─── JOB ROW ────────────────────────────────────────────── */
 .jobs-list, .documents-list { display: grid; gap: 8px; }
 

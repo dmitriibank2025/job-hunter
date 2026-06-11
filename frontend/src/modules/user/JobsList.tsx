@@ -8,12 +8,13 @@ function inferredPdfPath(filePath?: string, pdfFilePath?: string | null) {
   return filePath.replace(/\.docx$/i, ".pdf");
 }
 
-export function JobsList({ jobs, onMark, onDownload, onSelect }: { jobs: Job[]; onMark?: (jobId: string, patch: { applied?: boolean; ignored?: boolean }) => Promise<void>; onDownload?: (filePath?: string) => Promise<void>; onSelect?: (jobId: string) => void }) {
+export function JobsList({ jobs, onMark, onDownload, onSelect }: { jobs: Job[]; onMark?: (jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string }) => Promise<void>; onDownload?: (filePath?: string) => Promise<void>; onSelect?: (jobId: string) => void }) {
   if (!jobs.length) return <div className="empty">No jobs found.</div>;
   return <div className="jobs-list">{jobs.map((job) => {
     const score = job.userMatch?.matchScore ?? job.matchScore;
     const isApplied = Boolean(job.userMatch?.appliedAt);
     const isIgnored = Boolean(job.userMatch?.ignoredAt);
+    const isRejected = job.userMatch?.status === "REJECTED";
     const missingSkills = (job.userMatch?.analysis?.missingSkills || job.analysis?.missingSkills || []).slice(0, 8);
     const recommendation = job.userMatch?.analysis?.recommendation || job.analysis?.recommendation;
     const download = onDownload || downloadStorageFile;
@@ -21,7 +22,7 @@ export function JobsList({ jobs, onMark, onDownload, onSelect }: { jobs: Job[]; 
       <article className={`job-row ${isApplied ? "is-applied" : ""} ${isIgnored ? "is-ignored" : ""}`} key={job.id}>
         <div className="job-main">
           <div className="job-title">{job.title || "Untitled job"}</div>
-          <div className="job-meta">{[job.company || "Unknown company", job.location || "Unknown location", job.source || "UNKNOWN", isApplied ? "Applied" : isIgnored ? "Ignored" : ""].filter(Boolean).join(" | ")}</div>
+          <div className="job-meta">{[job.company || "Unknown company", job.location || "Unknown location", job.source || "UNKNOWN", isRejected ? "Rejected" : isApplied ? "Applied" : isIgnored ? "Ignored" : ""].filter(Boolean).join(" | ")}</div>
           <div className="job-desc">{shortText(job.description || job.analysis?.reason || "")}</div>
           {score !== undefined && score < 70 && missingSkills.length > 0 && (
             <div className="missing-skills">
@@ -52,6 +53,7 @@ export function JobsList({ jobs, onMark, onDownload, onSelect }: { jobs: Job[]; 
             ))}
             {onMark && <button className="btn btn-secondary" type="button" onClick={() => void onMark(job.id, { applied: !isApplied })}>{isApplied ? "Undo Applied" : "Applied"}</button>}
             {onMark && <button className="btn btn-secondary" type="button" onClick={() => void onMark(job.id, { ignored: !isIgnored })}>{isIgnored ? "Undo Ignore" : "Ignore"}</button>}
+            {onMark && <button className="btn btn-secondary" type="button" onClick={() => void onMark(job.id, { status: "REJECTED", notes: "Marked rejected from UI" })}>{isRejected ? "Rejected" : "Reject"}</button>}
           </div>
         </div>
       </article>

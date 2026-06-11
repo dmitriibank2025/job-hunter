@@ -16,6 +16,7 @@ import {
 } from "./modules/user";
 import type {
   AdminUser,
+  AppliedVacancy,
   AuthTokens,
   DocumentItem,
   EducationEntry,
@@ -41,6 +42,17 @@ const emptyStatistics: JobStatistics = {
   negative: 0,
   noResponse: 0,
   emailEvents: 0,
+};
+
+type LinkedInStatus = {
+  connected: boolean;
+  email?: string;
+  profileUrl?: string;
+  connectedAt?: string;
+  lastUsedAt?: string;
+  connectionId?: string;
+  connectionStatus?: "PENDING" | "CONNECTED" | "FAILED";
+  error?: string;
 };
 
 export function App() {
@@ -88,11 +100,13 @@ export function App() {
   const [baseResume, setBaseResume] = useState({ name: "", target: "FULLSTACK", targetTitle: "", template: "ATS" });
   const [editingResumeBaseId, setEditingResumeBaseId] = useState("");
   const [resumePreview, setResumePreview] = useState("");
-  const [linkedinAccount, setLinkedinAccount] = useState({ email: "", passwordSecretRef: "", storageStatePath: "" });
+  const [linkedinStatus, setLinkedinStatus] = useState<LinkedInStatus>({ connected: false });
+  const [linkedinConnectionId, setLinkedinConnectionId] = useState("");
   const [manualJob, setManualJob] = useState({ url: "", title: "", company: "", location: "", description: "" });
   const [selectedJobId, setSelectedJobId] = useState("");
   const [vacancyFilters, setVacancyFilters] = useState({ title: "", minScore: "0" });
   const [statistics, setStatistics] = useState<JobStatistics | null>(null);
+  const [appliedVacancies, setAppliedVacancies] = useState<AppliedVacancy[]>([]);
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [operation, setOperation] = useState<{ label: string; startedAt: string } | null>(null);
   const [progress, setProgress] = useState<any | null>(null);
@@ -265,10 +279,12 @@ export function App() {
     }));
     setEducations(loadedEducations.length ? loadedEducations : [emptyEducation]);
     const linkedin = nextUser.linkedinAccounts?.[0];
-    setLinkedinAccount({
-      email: linkedin?.email || "",
-      passwordSecretRef: linkedin?.passwordSecretRef || "",
-      storageStatePath: linkedin?.storageStatePath || "",
+    setLinkedinStatus({
+      connected: Boolean(linkedin?.isActive),
+      email: linkedin?.email || undefined,
+      profileUrl: linkedin?.profileUrl || undefined,
+      connectedAt: linkedin?.connectedAt,
+      lastUsedAt: linkedin?.lastUsedAt,
     });
     if (defaultResume) {
       setEditingResumeBaseId(defaultResume.id);
@@ -639,17 +655,54 @@ export function App() {
     }
   }
 
-  async function saveLinkedIn() {
-    const userId = requireUserId();
-    await api(`/users/${userId}/linkedin-account`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(linkedinAccount),
-    });
-    setStatus("LinkedIn account reference saved.");
+  async function loadLinkedInStatus(connectionId = linkedinConnectionId) {
+    requireUserId();
+    const query = connectionId ? `?connectionId=${encodeURIComponent(connectionId)}` : "";
+    const data = await api<LinkedInStatus>(`/linkedin/status${query}`);
+    setLinkedinStatus(data);
+    if (data.connectionStatus === "CONNECTED") {
+      setLinkedinConnectionId("");
+      setStatus("LinkedIn connected.");
+    } else if (data.connectionStatus === "FAILED") {
+      setStatus(data.error ? `LinkedIn connection failed: ${data.error}` : "LinkedIn connection failed.");
+    }
+    return data;
   }
 
-  async function markJob(jobId: string, patch: { applied?: boolean; ignored?: boolean }) {
+  async function connectLinkedIn() {
+    requireUserId();
+    const data = await api<{ success: boolean; connectionId: string }>("/linkedin/connect", {
+      method: "POST",
+    });
+    setLinkedinConnectionId(data.connectionId);
+    setLinkedinStatus((current) => ({
+      ...current,
+      connectionId: data.connectionId,
+      connectionStatus: "PENDING",
+      error: undefined,
+    }));
+    setStatus("LinkedIn login browser opened. Complete login to finish connecting.");
+  }
+
+  async function disconnectLinkedIn() {
+    requireUserId();
+    await api("/linkedin/disconnect", { method: "DELETE" });
+    setLinkedinConnectionId("");
+    setLinkedinStatus({ connected: false });
+    setStatus("LinkedIn disconnected.");
+  }
+
+  useEffect(() => {
+    if (!user || !linkedinConnectionId) return;
+
+    const timer = window.setInterval(() => {
+      void loadLinkedInStatus(linkedinConnectionId).catch(handleError);
+    }, 3_000);
+
+    return () => window.clearInterval(timer);
+  }, [user, linkedinConnectionId]);
+
+  async function markJob(jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string }) {
     const userId = requireUserId();
     await api(`/jobs/${jobId}/user-match`, {
       method: "PUT",
@@ -657,7 +710,37 @@ export function App() {
       body: JSON.stringify({ userId, ...patch }),
     });
     await refreshJobsAndDocuments(userId);
-    setStatus(patch.applied ? "Vacancy marked as applied." : "Vacancy status updated.");
+    setStatus(patch.status === "REJECTED" ? "Rejection recorded for prompt learning." : patch.applied ? "Vacancy marked as applied." : "Vacancy status updated.");
+  }
+
+  async function loadAppliedVacancies() {
+    const userId = requireUserId();
+    const data = await api<{ applications: AppliedVacancy[]; count: number }>(`/email/applications?userId=${userId}&limit=100`);
+    setAppliedVacancies(data.applications || []);
+    setStatus(`${data.count} application history items loaded.`);
+  }
+
+  async function syncEmailApplications() {
+    const userId = requireUserId();
+    const data = await api<{ syncedCount?: number; newEventsCount?: number; appliedHistoryFromEmails?: number; appliedHistoryFromLocalApplications?: number; message?: string }>("/email/report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    await loadAppliedVacancies();
+    setStatus(`Email synced. ${data.newEventsCount ?? 0} new events, ${data.appliedHistoryFromEmails ?? 0} email applications matched.`);
+  }
+
+  async function saveDailyAutomation(settings: { enabled: boolean; time: string; timezone: string }) {
+    const userId = requireUserId();
+    await api(`/users/${userId}/daily-automation`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
+    applyUser(loaded.user);
+    setStatus(settings.enabled ? `Daily automation enabled at ${settings.time} ${settings.timezone}.` : "Daily automation disabled.");
   }
 
   async function analyzeMissingJobs() {
@@ -850,9 +933,13 @@ export function App() {
                   settings={settings}
                   selectedResumeBaseId={selectedResumeBaseId}
                   resumeBases={user?.resumeBases || []}
+                  catalog={catalog}
+                  linkedinStatus={linkedinStatus}
                   manualJob={manualJob}
                   persist={persist}
                   setManualJob={setManualJob}
+                  onConnectLinkedIn={() => void connectLinkedIn().catch(handleError)}
+                  onRefreshLinkedIn={() => void loadLinkedInStatus().catch(handleError)}
                   onRunSearch={(sourceMode) => void runSearch(sourceMode).catch(handleError)}
                   onExtractManualVacancy={() => void extractManualVacancy().catch(handleError)}
                   onCreateManualVacancy={() => void createManualVacancy().catch(handleError)}
@@ -880,9 +967,15 @@ export function App() {
           {view === "documents" && <DocumentsView documents={documents} onDownload={handleDownload} />}
           {view === "settings" && (
               <SettingsView
-                  linkedinAccount={linkedinAccount}
-                  setLinkedinAccount={setLinkedinAccount}
-                  onSaveLinkedIn={() => void saveLinkedIn().catch(handleError)}
+                  linkedinStatus={linkedinStatus}
+                  appliedVacancies={appliedVacancies}
+                  onRefreshLinkedIn={() => void loadLinkedInStatus().catch(handleError)}
+                  onConnectLinkedIn={() => void connectLinkedIn().catch(handleError)}
+                  onDisconnectLinkedIn={() => void disconnectLinkedIn().catch(handleError)}
+                  onLoadApplications={() => void loadAppliedVacancies().catch(handleError)}
+                  onSyncEmailApplications={() => void syncEmailApplications().catch(handleError)}
+                  user={user}
+                  onSaveDailyAutomation={(dailySettings) => void saveDailyAutomation(dailySettings).catch(handleError)}
               />
           )}
           {view === "admin" && <AdminView adminUsers={adminUsers} onLoadUsers={() => void loadAdminUsers().catch(handleError)} />}
