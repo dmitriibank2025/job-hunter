@@ -639,7 +639,7 @@ export function App() {
     if (!selectedResumeBaseId) throw new Error("Select or create a base resume before searching.");
     const label = sourceMode === "PROVIDERS" ? "Provider vacancy search" : `${sourceMode} vacancy search`;
     startOperation(label);
-    addStep("Connecting to job providers...");
+    addStep(sourceMode === "EMAIL" ? "Scanning Gmail application history..." : "Connecting to job providers...");
     try {
       const data = await api<any>("/jobs/automation/run", {
         method: "POST",

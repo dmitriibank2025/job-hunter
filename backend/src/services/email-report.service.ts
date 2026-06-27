@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../infrastructure/prisma";
 import { isGmailConfigured, ParsedGmailMessage, searchGmailMessagesForUser } from "./gmail-api.service";
 import { syncAppliedVacancyHistory } from "./applied-vacancy.service";
+import { updateAutomationProgress } from "./job-automation-progress.service";
 
 const EMAIL_EVENT_TYPES = [
     "NEW_JOB_ALERT",
@@ -295,8 +296,31 @@ async function syncEmailEvents(userId: string): Promise<{
     let syncedCount = 0;
     let newEventsCount = 0;
 
-    for (const query of queries) {
-        const messages = await searchGmailMessagesForUser(userId, query);
+    for (let queryIndex = 0; queryIndex < queries.length; queryIndex += 1) {
+        const query = queries[queryIndex];
+        const label = queryIndex === 0
+            ? "job alerts"
+            : queryIndex === 1
+                ? "application responses"
+                : "sent applications";
+
+        updateAutomationProgress({
+            stage: "Email report",
+            message: `Scanning Gmail ${label} (${queryIndex + 1}/${queries.length})...`,
+            percent: 5 + queryIndex * 3,
+            currentStep: 1,
+        });
+
+        const messages = await searchGmailMessagesForUser(userId, query, undefined, (progress) => {
+            updateAutomationProgress({
+                stage: "Email report",
+                message: progress.done
+                    ? `Finished Gmail ${label}: ${progress.fetchedMessages} messages.`
+                    : `Scanning Gmail ${label}: page ${progress.page}, ${progress.fetchedMessages} messages read...`,
+                percent: Math.min(14, 5 + queryIndex * 3 + Math.min(progress.page, 3)),
+                currentStep: 1,
+            });
+        });
 
         for (const message of messages) {
             if (seen.has(message.id)) continue;

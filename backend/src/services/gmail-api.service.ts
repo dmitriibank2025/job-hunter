@@ -8,6 +8,13 @@ type GmailConfig = {
     appUserId?: string;
 };
 
+type GmailSearchProgress = {
+    page: number;
+    fetchedMessages: number;
+    pageMessages: number;
+    done: boolean;
+};
+
 const GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
 ];
@@ -334,7 +341,12 @@ export async function searchGmailMessages(query: string, maxResults?: number): P
     return searchGmailMessagesForUser(undefined, query, maxResults);
 }
 
-export async function searchGmailMessagesForUser(userId: string | undefined, query: string, maxResults?: number): Promise<ParsedGmailMessage[]> {
+export async function searchGmailMessagesForUser(
+    userId: string | undefined,
+    query: string,
+    maxResults?: number,
+    onProgress?: (progress: GmailSearchProgress) => void,
+): Promise<ParsedGmailMessage[]> {
     const config = await getGmailConfig(userId);
 
     if (!config) {
@@ -353,10 +365,12 @@ export async function searchGmailMessagesForUser(userId: string | undefined, que
         : undefined;
     const parsed: ParsedGmailMessage[] = [];
     let nextPageToken: string | undefined;
+    let page = 0;
 
     do {
         const remaining = requestedLimit ? requestedLimit - parsed.length : undefined;
         if (remaining !== undefined && remaining <= 0) break;
+        page += 1;
 
         const searchParams = new URLSearchParams({
             q: query,
@@ -371,6 +385,12 @@ export async function searchGmailMessagesForUser(userId: string | undefined, que
             accessToken,
         );
         const messages = list.messages ?? [];
+        onProgress?.({
+            page,
+            fetchedMessages: parsed.length,
+            pageMessages: messages.length,
+            done: false,
+        });
 
         for (const message of messages) {
             if (requestedLimit !== undefined && parsed.length >= requestedLimit) break;
@@ -380,10 +400,23 @@ export async function searchGmailMessagesForUser(userId: string | undefined, que
                 accessToken,
             );
             parsed.push(parseGmailMessage(full));
+            onProgress?.({
+                page,
+                fetchedMessages: parsed.length,
+                pageMessages: messages.length,
+                done: false,
+            });
         }
 
         nextPageToken = list.nextPageToken;
     } while (nextPageToken);
+
+    onProgress?.({
+        page,
+        fetchedMessages: parsed.length,
+        pageMessages: 0,
+        done: true,
+    });
 
     return parsed;
 }
