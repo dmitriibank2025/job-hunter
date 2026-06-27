@@ -127,6 +127,35 @@ function OptionChips({
   );
 }
 
+function RoleResumeSelect({
+  label,
+  target,
+  value,
+  resumeBases,
+  onChange,
+}: {
+  label: string;
+  target: "FULLSTACK" | "BACKEND" | "FRONTEND";
+  value: string;
+  resumeBases: ResumeBase[];
+  onChange: (value: string) => void;
+}) {
+  const matching = resumeBases.filter((resume) => resume.target === target);
+  const fallback = resumeBases.filter((resume) => resume.target !== target);
+
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value="">Auto by target</option>
+        {matching.map((resume) => <option value={resume.id} key={resume.id}>{resume.name}{resume.isDefault ? " (default)" : ""}</option>)}
+        {fallback.length > 0 && <option disabled>──────────</option>}
+        {fallback.map((resume) => <option value={resume.id} key={resume.id}>{resume.name} [{resume.target}]</option>)}
+      </select>
+    </label>
+  );
+}
+
 export function SearchView({
   settings,
   selectedResumeBaseId,
@@ -196,10 +225,19 @@ export function SearchView({
               {!linkedinConnected && <button className="btn btn-primary" type="button" onClick={onConnectLinkedIn}>{linkedinPending ? "Open Again" : "Connect"}</button>}
             </div>
           </div>
-          <label className="field"><span>Base Resume</span><select value={selectedResumeBaseId} onChange={(event) => persist({ ...settings, selectedResumeBaseId: event.target.value })}>
+          <label className="field"><span>Fallback Base Resume</span><select value={selectedResumeBaseId} onChange={(event) => persist({ ...settings, selectedResumeBaseId: event.target.value })}>
             <option value="">Select base resume</option>
             {resumeBases.map((resume) => <option value={resume.id} key={resume.id}>{resume.name}{resume.isDefault ? " (default)" : ""}</option>)}
           </select></label>
+          <div className="search-explainer">
+            <strong>Automatic resume selection</strong>
+            <span>Choose which base resume should be used for each vacancy type. If a field is left on Auto, backend uses the newest base resume with the matching target.</span>
+          </div>
+          <div className="form-grid">
+            <RoleResumeSelect label="Full Stack Resume" target="FULLSTACK" value={settings.selectedFullstackResumeBaseId} resumeBases={resumeBases} onChange={(value) => persist({ ...settings, selectedFullstackResumeBaseId: value })} />
+            <RoleResumeSelect label="Backend Resume" target="BACKEND" value={settings.selectedBackendResumeBaseId} resumeBases={resumeBases} onChange={(value) => persist({ ...settings, selectedBackendResumeBaseId: value })} />
+            <RoleResumeSelect label="Frontend Resume" target="FRONTEND" value={settings.selectedFrontendResumeBaseId} resumeBases={resumeBases} onChange={(value) => persist({ ...settings, selectedFrontendResumeBaseId: value })} />
+          </div>
           <OptionChips label="Target Roles" value={settings.targetRoles} options={roleOptions} onChange={(value) => persist({ ...settings, targetRoles: value })} />
           <OptionChips label="Locations" value={settings.targetLocations} options={locationOptions} onChange={(value) => persist({ ...settings, targetLocations: value, searchLocation: selectedOptions(value, locationOptions)[0] || settings.searchLocation })} />
           <OptionChips label="Required Technologies" value={settings.requiredTech} options={technologyOptions} onChange={(value) => persist({ ...settings, requiredTech: value })} />
@@ -233,9 +271,22 @@ export function SearchView({
             {resumeBases.map((resume) => <option value={resume.id} key={resume.id}>{resume.name}{resume.isDefault ? " (default)" : ""}</option>)}
           </select></label>
           <TextArea label="Vacancy Text" rows={8} value={manualJob.description} onChange={(value) => setManualJob({ ...manualJob, description: value })} />
+          {manualJob.description.length > 0 && manualJob.description.length < 50 && (
+            <p className="field-hint is-warn">Need at least 50 characters — currently {manualJob.description.length}.</p>
+          )}
+          {manualJob.description.length >= 50 && (
+            <p className="field-hint is-ok">Vacancy text ready ({manualJob.description.length} chars).</p>
+          )}
           <div className="inline-actions">
-            <button className="btn btn-secondary" type="button" onClick={onExtractManualVacancy}>Extract from URL</button>
-            <button className="btn btn-primary" type="button" onClick={onCreateManualVacancy}>Create Application Package</button>
+            <button className="btn btn-secondary" type="button" onClick={onExtractManualVacancy} disabled={!manualJob.url.trim()}>Extract from URL</button>
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={onCreateManualVacancy}
+              disabled={!manualJob.url.trim() && manualJob.description.trim().length < 50}
+            >
+              Create Application Package
+            </button>
           </div>
         </section>
       </div>

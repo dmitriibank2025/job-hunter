@@ -26,6 +26,9 @@ export function defaultSettings() {
     accountPlan: "FREE",
     userId: "",
     selectedResumeBaseId: "",
+    selectedFullstackResumeBaseId: "",
+    selectedBackendResumeBaseId: "",
+    selectedFrontendResumeBaseId: "",
     searchLocation: "Israel",
     ...JSON.parse(localStorage.getItem(storageKey) || "{}"),
   };

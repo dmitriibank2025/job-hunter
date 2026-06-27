@@ -7,6 +7,13 @@ function inferredPdfPath(filePath?: string, pdfFilePath?: string | null) {
   return filePath.replace(/\.docx$/i, ".pdf");
 }
 
+function atsClass(score?: number | null) {
+  if (score == null) return "";
+  if (score >= 85) return "is-high";
+  if (score >= 75) return "is-mid";
+  return "is-low";
+}
+
 export function DocumentsList({ documents, onDownload = downloadStorageFile }: { documents: DocumentItem[]; onDownload?: (filePath?: string) => Promise<void> }) {
   if (!documents.length) return <div className="empty">No documents generated yet.</div>;
   return <div className="documents-list">{documents.map((item, index) => {
@@ -17,6 +24,14 @@ export function DocumentsList({ documents, onDownload = downloadStorageFile }: {
           <strong>{item.documentType}</strong>
           <span>{item.job ? `${item.job.company || "Company"} | ${item.job.title}` : item.filePath}</span>
           {item.createdAt && <small>{new Date(item.createdAt).toLocaleString()}</small>}
+          {item.documentType === "Resume" && item.atsScore != null && (
+            <small
+              className={`ats-score ${atsClass(item.atsScore)}`}
+              title={item.atsIssues?.length ? item.atsIssues.join("\n") : "ATS validation passed"}
+            >
+              ATS {item.atsScore}{item.atsIssues?.length ? ` / ${item.atsIssues.length} issues` : ""}
+            </small>
+          )}
         </div>
         <div className="inline-actions">
           {item.filePath && <button className="btn btn-primary" type="button" onClick={() => void onDownload(item.filePath)}>{item.documentType === "Resume" ? "DOCX" : "Letter"}</button>}

@@ -6,6 +6,7 @@ import { shortText } from "../../utils/form";
 type VacancyFilters = {
   title: string;
   minScore: string;
+  status: string;
 };
 
 type VacanciesViewProps = {
@@ -16,9 +17,10 @@ type VacanciesViewProps = {
   vacancyFilters: VacancyFilters;
   setVacancyFilters: (filters: VacancyFilters) => void;
   onSelectJob: (jobId: string) => void;
-  onMark: (jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string }) => Promise<void>;
+  onMark: (jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string; rejectionReason?: string }) => Promise<void>;
   onDownload: (filePath?: string) => Promise<void>;
   onAnalyzeMissing: () => void;
+  onGenerateMissingResumes: () => void;
   onGenerateResume: (jobId: string) => void;
   onGenerateCoverLetter: (jobId: string) => void;
   onGeneratePackage: (jobId: string) => void;
@@ -66,10 +68,20 @@ function JobMatchDetail({
             <strong>Missing Skills</strong>
             <div>{missingSkills.length ? missingSkills.map((skill) => <span className="keyword-chip" key={skill}>{skill}</span>) : <small>No missing skills recorded.</small>}</div>
           </div>
+          {analysis?.recommendation === "SKIP" && (
+            <div className="match-warning">
+              ⚠️ Score too low or wrong stack — generating a resume for this job is not recommended.
+            </div>
+          )}
+          {score !== undefined && score < 70 && analysis?.recommendation !== "APPLY" && (
+            <div className="match-warning">
+              ⚠️ Match score below 70 — resume generation may not be effective for this vacancy.
+            </div>
+          )}
           <div className="inline-actions">
             <button className="btn btn-primary" type="button" onClick={() => onGeneratePackage(job.id)}>Generate Package</button>
-            <button className="btn btn-secondary" type="button" onClick={() => onGenerateResume(job.id)}>Resume</button>
-            <button className="btn btn-secondary" type="button" onClick={() => onGenerateCoverLetter(job.id)}>Cover Letter</button>
+            <button className="btn btn-secondary" type="button" onClick={() => onGenerateResume(job.id)}>{latestResume ? "Rebuild Resume" : "Generate Resume"}</button>
+            <button className="btn btn-secondary" type="button" onClick={() => onGenerateCoverLetter(job.id)}>{latestLetter ? "Rebuild Cover Letter" : "Generate Cover Letter"}</button>
           </div>
           <div className="inline-actions">
             {latestResume?.filePath && <button className="btn btn-primary" type="button" onClick={() => void onDownload(latestResume.filePath)}>Download Resume</button>}
@@ -103,11 +115,13 @@ export function VacanciesView({
   onMark,
   onDownload,
   onAnalyzeMissing,
+  onGenerateMissingResumes,
   onGenerateResume,
   onGenerateCoverLetter,
   onGeneratePackage,
 }: VacanciesViewProps) {
   const missingAnalysisCount = jobs.filter((job) => (job.userMatch?.matchScore ?? job.matchScore) == null).length;
+  const missingResumeCount = visibleJobs.filter((job) => !job.resumeVersions?.length).length;
 
   return (
     <section className="view is-active">
@@ -116,13 +130,36 @@ export function VacanciesView({
         <div className="filter-row">
           <Field label="Title / Company" value={vacancyFilters.title} onChange={(value) => setVacancyFilters({ ...vacancyFilters, title: value })} />
           <Field label="Minimum Match" value={vacancyFilters.minScore} onChange={(value) => setVacancyFilters({ ...vacancyFilters, minScore: value })} />
+          <label className="field">
+            <span>Status</span>
+            <select value={vacancyFilters.status} onChange={(event) => setVacancyFilters({ ...vacancyFilters, status: event.target.value })}>
+              <option value="ALL">All</option>
+              <option value="ACTIVE">Active</option>
+              <option value="APPLIED">Applied</option>
+              <option value="REJECTED">Rejected</option>
+              <option value="IGNORED">Ignored</option>
+            </select>
+          </label>
         </div>
         {missingAnalysisCount > 0 && (
           <div className="inline-actions">
             <button className="btn btn-primary" type="button" onClick={onAnalyzeMissing}>Analyze Missing ({missingAnalysisCount})</button>
           </div>
         )}
-        <JobsList jobs={visibleJobs} onMark={onMark} onDownload={onDownload} onSelect={onSelectJob} />
+        {missingResumeCount > 0 && (
+          <div className="inline-actions">
+            <button className="btn btn-primary" type="button" onClick={onGenerateMissingResumes}>Generate Missing Resumes ({missingResumeCount})</button>
+          </div>
+        )}
+        <JobsList
+          jobs={visibleJobs}
+          onMark={onMark}
+          onDownload={onDownload}
+          onSelect={onSelectJob}
+          onGenerateResume={onGenerateResume}
+          onGenerateCoverLetter={onGenerateCoverLetter}
+          onGeneratePackage={onGeneratePackage}
+        />
       </section>
       <JobMatchDetail
         job={selectedJob}

@@ -16,7 +16,7 @@ type OverviewViewProps = {
   onNavigate: (view: View) => void;
   onRunSearch: () => void;
   onAnalyzeMissing: () => void;
-  onMark: (jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string }) => Promise<void>;
+  onMark: (jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string; rejectionReason?: string }) => Promise<void>;
   onDownload: (filePath?: string) => Promise<void>;
 };
 
@@ -60,6 +60,8 @@ export function OverviewView({
   const generatedJobs = jobs.filter((job) => (job.resumeVersions?.length || 0) + (job.coverLetters?.length || 0) > 0).length;
   const appliedJobs = jobs.filter((job) => job.userMatch?.appliedAt).length;
   const responses = (statistics?.positive ?? 0) + (statistics?.negative ?? 0);
+  const sentApplications = statistics?.sent ?? appliedJobs;
+  const trackedApplications = statistics?.tracked ?? 0;
 
   return (
     <section className="view is-active">
@@ -98,7 +100,7 @@ export function OverviewView({
                 ["Base Resume", hasResume(user), "Reusable resume source and PDF"],
                 ["Vacancies", jobs.length > 0, `${jobs.length} collected`],
                 ["Match Review", analyzedJobs(jobs) > 0, `${analyzedJobs(jobs)} analyzed`],
-                ["Applications", (statistics?.sent ?? 0) > 0, `${statistics?.sent ?? 0} sent`],
+                ["Applications", sentApplications > 0, `${sentApplications} sent`],
               ].map(([label, done, detail]) => (
                 <button
                   className={`flow-step ${done ? "is-done" : ""}`}
@@ -124,13 +126,14 @@ export function OverviewView({
             <Metric label="Plan" value={user.plan || settings.accountPlan} />
           </div>
           <section className="surface">
-            <SectionHead title="Application Statistics" subtitle="Tracked from manual marks, generated packages, and Gmail sync when connected." />
+            <SectionHead title="Application Statistics" subtitle="Sent = manual applied marks or submitted applications. Tracked = email-synced vacancies. Rejections = from email + manual marks." />
             <div className="pipeline-funnel">
               {[
                 ["Found", jobs.length],
                 ["Analyzed", analyzedJobs(jobs)],
                 ["Generated", generatedJobs],
-                ["Applied", appliedJobs || statistics?.sent || 0],
+                ["Applied", sentApplications],
+                ["Tracked", trackedApplications],
                 ["Responses", responses],
               ].map(([label, value], index) => (
                 <button className="funnel-step" type="button" key={label} onClick={() => onNavigate(index >= 2 ? "documents" : "vacancies")}>
@@ -143,10 +146,12 @@ export function OverviewView({
               {[
                 ["Sent", statistics?.sent ?? 0, "sent"],
                 ["Positive", statistics?.positive ?? 0, "positive"],
-                ["Negative", statistics?.negative ?? 0, "negative"],
+                ["Rejections", statistics?.negative ?? 0, "negative"],
                 ["No response", statistics?.noResponse ?? 0, "silent"],
+                ["Pending", statistics?.pendingFeedback ?? 0, "silent"],
+                ["Tracked total", statistics?.rejectionRecords ?? 0, "silent"],
               ].map(([label, value, tone]) => {
-                const max = Math.max(statistics?.sent ?? 0, statistics?.positive ?? 0, statistics?.negative ?? 0, statistics?.noResponse ?? 0, 1);
+                const max = Math.max(statistics?.sent ?? 0, statistics?.positive ?? 0, statistics?.negative ?? 0, statistics?.noResponse ?? 0, statistics?.pendingFeedback ?? 0, 1);
                 return (
                   <div className={`bar-stat is-${tone}`} key={label}>
                     <div><span>{label}</span><strong>{value}</strong></div>

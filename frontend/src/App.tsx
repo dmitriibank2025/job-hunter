@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { appActions, useAppDispatch, useAppSelector } from "./store";
-import { api, downloadStorageFile } from "./api/client";
+import { api, AUTH_EXPIRED_EVENT, downloadStorageFile } from "./api/client";
+import { ToastContainer, makeToast, type Toast } from "./components/Toast";
 import { authStorageKey, defaultSettings, storageKey } from "./config/app.config";
 import { AdminView } from "./modules/admin";
 import { AppSidebar, AuthPanel, ProcessPanel, WorkspaceToolbar } from "./modules/app";
@@ -22,6 +23,7 @@ import type {
   EducationEntry,
   ExperienceEntry,
   Job,
+  RejectedResumeReport,
   ResumeBase,
   Technology,
   View,
@@ -53,6 +55,19 @@ type LinkedInStatus = {
   connectionId?: string;
   connectionStatus?: "PENDING" | "CONNECTED" | "FAILED";
   error?: string;
+};
+
+type GmailStatus = {
+  configured: boolean;
+  connected: boolean;
+  envFallbackConfigured?: boolean;
+  account?: {
+    email?: string | null;
+    connectedAt?: string;
+    lastUsedAt?: string | null;
+    lastError?: string | null;
+    isActive?: boolean;
+  } | null;
 };
 
 export function App() {
@@ -101,16 +116,19 @@ export function App() {
   const [editingResumeBaseId, setEditingResumeBaseId] = useState("");
   const [resumePreview, setResumePreview] = useState("");
   const [linkedinStatus, setLinkedinStatus] = useState<LinkedInStatus>({ connected: false });
+  const [gmailStatus, setGmailStatus] = useState<GmailStatus>({ configured: false, connected: false });
   const [linkedinConnectionId, setLinkedinConnectionId] = useState("");
   const [manualJob, setManualJob] = useState({ url: "", title: "", company: "", location: "", description: "" });
   const [selectedJobId, setSelectedJobId] = useState("");
-  const [vacancyFilters, setVacancyFilters] = useState({ title: "", minScore: "0" });
+  const [vacancyFilters, setVacancyFilters] = useState({ title: "", minScore: "0", status: "ALL" });
   const [statistics, setStatistics] = useState<JobStatistics | null>(null);
   const [appliedVacancies, setAppliedVacancies] = useState<AppliedVacancy[]>([]);
+  const [rejectedResumeReport, setRejectedResumeReport] = useState<RejectedResumeReport | null>(null);
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [operation, setOperation] = useState<{ label: string; startedAt: string } | null>(null);
   const [progress, setProgress] = useState<any | null>(null);
-  const [lastError, setLastError] = useState("");
+  const [operationSteps, setOperationSteps] = useState<string[]>([]);
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const [authPanelOpen, setAuthPanelOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const isBusy = Boolean(operation);
@@ -143,19 +161,57 @@ export function App() {
   );
   const selectedResumeBaseId = settings.selectedResumeBaseId || user?.resumeBases?.find((item) => item.isDefault)?.id || user?.resumeBases?.[0]?.id || "";
   const selectedResumeBase = user?.resumeBases?.find((item) => item.id === selectedResumeBaseId);
+  const selectedResumeBaseIds = useMemo(() => ({
+    FULLSTACK: settings.selectedFullstackResumeBaseId || undefined,
+    BACKEND: settings.selectedBackendResumeBaseId || undefined,
+    FRONTEND: settings.selectedFrontendResumeBaseId || undefined,
+  }), [settings.selectedFullstackResumeBaseId, settings.selectedBackendResumeBaseId, settings.selectedFrontendResumeBaseId]);
 
   useEffect(() => {
     if (view === "admin" && !isAdmin) setView("overview");
   }, [isAdmin, view]);
 
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  function addToast(kind: Toast["kind"], title: string, message?: string, autoDismiss?: boolean) {
+    setToasts((prev) => [...prev.slice(-9), makeToast(kind, title, message, autoDismiss)]);
+  }
+
+  function addStep(step: string) {
+    setOperationSteps((prev) => [...prev, step]);
+    setStatus(step);
+  }
+
   function errorMessage(error: unknown) {
     return error instanceof Error ? error.message : String(error || "Unexpected error.");
   }
 
-  function handleError(error: unknown) {
-    const message = errorMessage(error);
-    setLastError(message);
-    setStatus(`Error: ${message}`);
+  // Context-aware error: tries to give the user a helpful hint based on the message.
+  function handleError(error: unknown, context?: string) {
+    const raw = errorMessage(error);
+    const title = context ? `${context} failed` : "Something went wrong";
+    let hint: string | undefined;
+
+    if (/session expired|log in again/i.test(raw)) {
+      hint = "Your session has expired. Please log in again.";
+    } else if (/network|fetch|failed to fetch|ERR_NETWORK/i.test(raw)) {
+      hint = "Cannot reach the server. Check your connection or wait a moment and retry.";
+    } else if (/token|unauthorized|401/i.test(raw)) {
+      hint = "Authentication error. Try logging out and back in.";
+    } else if (/too short|description/i.test(raw)) {
+      hint = "The job description is too short. Paste the full vacancy text or use a direct URL.";
+    } else if (/timeout|timed out/i.test(raw)) {
+      hint = "The operation timed out. The server may be busy — try again in a moment.";
+    } else if (/openai|api key|quota/i.test(raw.toLowerCase())) {
+      hint = "OpenAI API error. Check your API key or usage quota.";
+    } else if (/playwright|browser/i.test(raw.toLowerCase())) {
+      hint = "Browser automation failed. The page may have blocked scraping — paste the text manually.";
+    }
+
+    addToast("error", title, hint ?? raw);
+    setStatus(`${title}: ${raw}`);
   }
 
   function guardBusy(action = "start another action") {
@@ -186,13 +242,18 @@ export function App() {
   }
 
   function startOperation(label: string) {
-    setLastError("");
     setProgress(null);
+    setOperationSteps([]);
     setOperation({ label, startedAt: new Date().toISOString() });
+    setStatus(label);
   }
 
-  function finishOperation() {
+  function finishOperation(successMessage?: string) {
     setOperation(null);
+    if (successMessage) {
+      addToast("success", successMessage);
+      setStatus(successMessage);
+    }
   }
 
   useEffect(() => {
@@ -248,6 +309,9 @@ export function App() {
       accountFullName: nextUser.profile?.fullName || settings.accountFullName,
       accountPlan: nextUser.plan,
       selectedResumeBaseId: selectedForUser,
+      selectedFullstackResumeBaseId: nextUser.dailyAutomationFullstackResumeBaseId || settings.selectedFullstackResumeBaseId,
+      selectedBackendResumeBaseId: nextUser.dailyAutomationBackendResumeBaseId || settings.selectedBackendResumeBaseId,
+      selectedFrontendResumeBaseId: nextUser.dailyAutomationFrontendResumeBaseId || settings.selectedFrontendResumeBaseId,
     });
     setProfile({
       location: nextUser.profile?.location || "",
@@ -319,12 +383,14 @@ export function App() {
     let activeUserId = "";
     if (storedTokens?.accessToken) {
       try {
+        // api() will auto-refresh if the token is expired/expiring soon.
         const me = await api<{ user: WorkspaceUser }>("/auth/me");
         activeUserId = me.user.id;
         const loaded = await api<{ user: WorkspaceUser }>(`/users/${activeUserId}`);
         applyUser(loaded.user);
       } catch {
-        localStorage.removeItem(authStorageKey);
+        // If auto-refresh also failed, AUTH_EXPIRED_EVENT is dispatched by api() and
+        // the listener below will open the login panel. Just reset local state here.
         dispatch(appActions.setAuthTokens(null));
         persist({ ...settings, userId: "" });
       }
@@ -349,6 +415,21 @@ export function App() {
 
   useEffect(() => {
     void loadInitial().catch(handleError);
+  }, []);
+
+  // When api() detects a fully-expired session (refresh also failed), open login panel.
+  useEffect(() => {
+    function onAuthExpired() {
+      setUser(null);
+      setJobs([]);
+      setDocuments([]);
+      setStatistics(null);
+      setAuthMode("login");
+      setAuthPanelOpen(true);
+      setStatus("Session expired. Please log in again.");
+    }
+    window.addEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
   }, []);
 
   function extractDocuments(sourceJobs: Job[]) {
@@ -556,8 +637,9 @@ export function App() {
     if (!guardBusy("start a new search")) return;
     const userId = requireUserId();
     if (!selectedResumeBaseId) throw new Error("Select or create a base resume before searching.");
-    startOperation(sourceMode === "PROVIDERS" ? "Provider vacancy search" : `${sourceMode} vacancy search`);
-    setStatus("Running vacancy search: collecting jobs...");
+    const label = sourceMode === "PROVIDERS" ? "Provider vacancy search" : `${sourceMode} vacancy search`;
+    startOperation(label);
+    addStep("Connecting to job providers...");
     try {
       const data = await api<any>("/jobs/automation/run", {
         method: "POST",
@@ -565,6 +647,7 @@ export function App() {
         body: JSON.stringify({
           userId,
           resumeBaseId: selectedResumeBaseId || undefined,
+          resumeBaseIds: selectedResumeBaseIds,
           searchLocation: settings.searchLocation,
           sourceMode,
           preferences: {
@@ -578,8 +661,11 @@ export function App() {
         }),
       });
       await refreshJobsAndDocuments(userId);
-      setStatus(`Done. Collected ${data.newJobsCount}, analyzed ${data.analyzedJobsCount}, resumes ${data.generatedResumesCount}, letters ${data.generatedCoverLettersCount}.`);
-    } finally {
+      const summary = `Collected ${data.newJobsCount ?? 0} new · Analyzed ${data.analyzedJobsCount ?? 0} · Resumes ${data.generatedResumesCount ?? 0} · Letters ${data.generatedCoverLettersCount ?? 0}`;
+      finishOperation(summary);
+      addToast("success", "Search complete", summary);
+    } catch (err) {
+      handleError(err, "Vacancy search");
       finishOperation();
     }
   }
@@ -588,21 +674,35 @@ export function App() {
     if (!guardBusy("create a manual vacancy")) return;
     const userId = requireUserId();
     if (!selectedResumeBaseId) throw new Error("Select or create a base resume before generating documents.");
-    startOperation("Manual vacancy resume generation");
-    setStatus("Creating manual vacancy: extracting, analyzing, generating documents...");
+    if (!manualJob.url.trim() && manualJob.description.trim().length < 50) {
+      throw new Error("Paste at least 50 characters of vacancy text, or provide a URL.");
+    }
+    startOperation("Manual vacancy");
     try {
+      if (manualJob.url.trim() && !manualJob.description.trim()) {
+        addStep("Extracting vacancy text from URL...");
+      }
+      addStep("Sending to server for processing...");
       const data = await api<any>("/jobs/manual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           userId,
           resumeBaseId: selectedResumeBaseId || undefined,
+          resumeBaseIds: selectedResumeBaseIds,
           ...manualJob,
         }),
       });
+      addStep("Analyzing job fit with AI...");
+      addStep("Generating tailored resume and cover letter...");
       await refreshJobsAndDocuments(userId);
-      setStatus(data.message || "Manual vacancy processed.");
-    } finally {
+      const msg = data.message || "Manual vacancy processed.";
+      finishOperation(msg);
+      addToast("success", "Application package ready", msg);
+      // Reset form only on success.
+      setManualJob({ url: "", title: "", company: "", location: "", description: "" });
+    } catch (err) {
+      handleError(err, "Manual vacancy");
       finishOperation();
     }
   }
@@ -610,14 +710,16 @@ export function App() {
   async function extractManualVacancy() {
     if (!guardBusy("extract a vacancy from URL")) return;
     if (!manualJob.url.trim()) throw new Error("Paste a vacancy URL first.");
-    startOperation("Extract manual vacancy");
-    setStatus("Extracting vacancy details from URL...");
+    startOperation("Extract from URL");
+    addStep("Opening browser and loading page...");
     try {
       const data = await api<{ vacancy?: Partial<typeof manualJob> }>("/jobs/manual/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: manualJob.url }),
       });
+      const filled = [data.vacancy?.title, data.vacancy?.company, data.vacancy?.description?.slice(0, 50)]
+        .filter(Boolean).join(" · ");
       setManualJob({
         url: manualJob.url,
         title: data.vacancy?.title || manualJob.title,
@@ -625,8 +727,11 @@ export function App() {
         location: data.vacancy?.location || manualJob.location,
         description: data.vacancy?.description || manualJob.description,
       });
-      setStatus("Vacancy details extracted.");
-    } finally {
+      const msg = filled ? `Extracted: ${filled}…` : "Extraction returned limited data — paste description manually.";
+      finishOperation(msg);
+      addToast(filled ? "success" : "warning", "URL extraction done", msg);
+    } catch (err) {
+      handleError(err, "URL extraction");
       finishOperation();
     }
   }
@@ -640,17 +745,112 @@ export function App() {
       : type === "letter"
         ? "generate-cover-letter"
         : "generate-application-package";
-    startOperation(type === "package" ? "Generate application package" : type === "resume" ? "Generate tailored resume" : "Generate cover letter");
-    setStatus("Generating documents for selected vacancy...");
+    const label = type === "package" ? "Generate application package" : type === "resume" ? "Generate tailored resume" : "Generate cover letter";
+    startOperation(label);
+    addStep("Selecting the best base resume for this role...");
+    addStep("Building resume prompt with job requirements...");
     try {
       await api(`/jobs/${jobId}/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, resumeBaseId: selectedResumeBaseId }),
+        body: JSON.stringify({ userId, resumeBaseId: selectedResumeBaseId, resumeBaseIds: selectedResumeBaseIds }),
       });
       await refreshJobsAndDocuments(userId);
-      setStatus(type === "package" ? "Application package generated." : type === "resume" ? "Tailored resume generated." : "Cover letter generated.");
-    } finally {
+      const successMsg = type === "package" ? "Application package ready." : type === "resume" ? "Tailored resume generated." : "Cover letter generated.";
+      finishOperation(successMsg);
+      addToast("success", successMsg);
+    } catch (err) {
+      handleError(err, label);
+      finishOperation();
+    }
+  }
+
+  async function generateMissingResumesForVisibleJobs() {
+    if (!guardBusy("generate missing resumes")) return;
+    const userId = requireUserId();
+    if (!selectedResumeBaseId) throw new Error("Select or create a base resume before generating documents.");
+
+    const candidates = visibleJobs.filter((job) => !job.resumeVersions?.length);
+    if (!candidates.length) {
+      addToast("info", "Nothing to generate", "All visible vacancies already have resumes.");
+      setStatus("No visible vacancies without resumes match the current filters.");
+      return;
+    }
+
+    startOperation(`Generate missing resumes (${candidates.length})`);
+    const errors: string[] = [];
+    const generated: Array<{ job: Job; resume: { filePath?: string | null; pdfFilePath?: string | null } }> = [];
+    try {
+      for (let index = 0; index < candidates.length; index += 1) {
+        const job = candidates[index];
+        addStep(`[${index + 1}/${candidates.length}] Generating: ${job.title} @ ${job.company || "?"}`);
+        try {
+          const resume = await api<{ filePath?: string | null; pdfFilePath?: string | null }>(`/jobs/${job.id}/generate-resume`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId, resumeBaseId: selectedResumeBaseId, resumeBaseIds: selectedResumeBaseIds }),
+          });
+          generated.push({ job, resume });
+        } catch (error) {
+          errors.push(`${job.title}: ${errorMessage(error)}`);
+        }
+      }
+
+      await refreshJobsAndDocuments(userId);
+      const generatedCount = candidates.length - errors.length;
+      let telegramStatus = "";
+      try {
+        const notification = await api<{ telegramSent: boolean }>("/jobs/notifications/telegram", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId,
+            message: [
+              "📋 JOB HUNTER RESUME GENERATION REPORT",
+              `⏰ Time: ${new Date().toLocaleString()}`,
+              "",
+              "════════════════════════════════════",
+              "📊 SUMMARY",
+              `├─ Matching Vacancies Without Resume: ${candidates.length}`,
+              `├─ Resumes Generated: ${generatedCount}`,
+              `├─ Failed Resumes: ${errors.length}`,
+              "",
+              generated.length ? `✅ RESUMES GENERATED (${generated.length})` : "",
+              generated.length ? "" : "",
+              ...generated.flatMap(({ job, resume }, index) => {
+                const score = job.userMatch?.matchScore ?? job.matchScore;
+                return [
+                  `${index + 1}. ${job.title} @ ${job.company || "Unknown company"}`,
+                  `   📍 Score: ${score == null ? "Not analyzed" : `${score}/100`}`,
+                  `   🔗 Job: ${job.url || "No URL"}`,
+                  `   📄 Resume: ${resume.filePath || "Generated"}`,
+                  `   💼 DOCX: ${resume.filePath || "Generated"}`,
+                  resume.pdfFilePath ? `   🧾 PDF: ${resume.pdfFilePath}` : "",
+                  "",
+                ];
+              }),
+              errors.length ? "" : "",
+              errors.length ? `❌ Failed resume details are available in the app status/logs.` : "",
+            ].filter(Boolean).join("\n"),
+          }),
+        });
+        telegramStatus = notification.telegramSent ? " Telegram notification sent." : " Telegram notification skipped: not configured.";
+      } catch (error) {
+        telegramStatus = ` Telegram notification failed: ${errorMessage(error)}`;
+      }
+
+      const summary = errors.length
+        ? `Generated ${generatedCount}/${candidates.length} resumes. ${errors.length} failed.${telegramStatus}`
+        : `Generated ${generatedCount} resumes.${telegramStatus}`;
+      finishOperation(summary);
+      if (errors.length) {
+        addToast("warning", `${generatedCount} resumes generated, ${errors.length} failed`,
+          errors.slice(0, 3).join(" · ") + (errors.length > 3 ? ` …+${errors.length - 3} more` : ""));
+      } else {
+        addToast("success", summary);
+      }
+    } catch (err) {
+      handleError(err, "Batch resume generation");
       finishOperation();
     }
   }
@@ -702,7 +902,12 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [user, linkedinConnectionId]);
 
-  async function markJob(jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string }) {
+  useEffect(() => {
+    if (!user?.id) return;
+    void loadGmailStatus(user.id).catch(() => undefined);
+  }, [user?.id]);
+
+  async function markJob(jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string; rejectionReason?: string }) {
     const userId = requireUserId();
     await api(`/jobs/${jobId}/user-match`, {
       method: "PUT",
@@ -720,6 +925,23 @@ export function App() {
     setStatus(`${data.count} application history items loaded.`);
   }
 
+  async function loadGmailStatus(userId = requireUserId()) {
+    const status = await api<GmailStatus>(`/email/gmail/status?userId=${userId}`);
+    setGmailStatus(status);
+    return status;
+  }
+
+  async function connectGmail() {
+    const userId = requireUserId();
+    const data = await api<{ authUrl: string }>("/email/gmail/auth-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    window.open(data.authUrl, "_blank", "noopener,noreferrer");
+    setStatus("Gmail OAuth opened. After approving access, return here and click Sync Gmail Responses.");
+  }
+
   async function syncEmailApplications() {
     const userId = requireUserId();
     const data = await api<{ syncedCount?: number; newEventsCount?: number; appliedHistoryFromEmails?: number; appliedHistoryFromLocalApplications?: number; message?: string }>("/email/report", {
@@ -727,8 +949,66 @@ export function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ userId }),
     });
+    await loadGmailStatus(userId).catch(() => undefined);
     await loadAppliedVacancies();
-    setStatus(`Email synced. ${data.newEventsCount ?? 0} new events, ${data.appliedHistoryFromEmails ?? 0} email applications matched.`);
+    setStatus(data.message?.startsWith("Gmail sync skipped")
+      ? data.message.split("\n")[0]
+      : `Email synced. ${data.newEventsCount ?? 0} new events, ${data.appliedHistoryFromEmails ?? 0} email applications matched.`);
+  }
+
+  async function loadRejectedResumeReport() {
+    const userId = requireUserId();
+    const report = await api<RejectedResumeReport>(`/jobs/rejections/resume-report?userId=${userId}`);
+    setRejectedResumeReport(report);
+    setStatus(`${report.totalRejections} rejections analyzed. ${report.highScoreRejected} high-score rejected matches found.`);
+  }
+
+  async function improvePromptRules() {
+    const userId = requireUserId();
+    const data = await api<{ success: boolean; rulesGenerated: number }>("/jobs/rejections/refine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    await loadRejectedResumeReport();
+    setStatus(`Prompt rules improved. ${data.rulesGenerated} rules generated or refreshed.`);
+  }
+
+  async function runDailyReport() {
+    const userId = requireUserId();
+    startOperation("Daily report");
+    addStep("Syncing Gmail, updating vacancy history...");
+    try {
+      const data = await api<{ newJobsCount: number; emailEventsCount: number; emailSyncedCount: number }>("/jobs/daily-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
+      const msg = `Daily report done. ${data.newJobsCount} new jobs · ${data.emailSyncedCount} emails synced · ${data.emailEventsCount} events.`;
+      finishOperation(msg);
+      addToast("success", "Daily report complete", msg);
+    } catch (err) {
+      handleError(err, "Daily report");
+      finishOperation();
+    }
+  }
+
+  async function repairUserMatches() {
+    const userId = requireUserId();
+    addStep("Scanning for jobs without user links...");
+    try {
+      const data = await api<{ created: number; skipped: number }>("/jobs/user-matches/repair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
+      await refreshJobsAndDocuments(userId);
+      const msg = `Repair done. ${data.created} links created, ${data.skipped} already linked.`;
+      addToast("success", "Job links repaired", msg);
+      setStatus(msg);
+    } catch (err) {
+      handleError(err, "Repair job links");
+    }
   }
 
   async function saveDailyAutomation(settings: { enabled: boolean; time: string; timezone: string }) {
@@ -736,7 +1016,7 @@ export function App() {
     await api(`/users/${userId}/daily-automation`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(settings),
+      body: JSON.stringify({ ...settings, resumeBaseIds: selectedResumeBaseIds }),
     });
     const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
     applyUser(loaded.user);
@@ -753,7 +1033,7 @@ export function App() {
       const data = await api<{ analyzed: number }>("/jobs/analyze-all", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, resumeBaseId: selectedResumeBaseId }),
+        body: JSON.stringify({ userId, resumeBaseId: selectedResumeBaseId, resumeBaseIds: selectedResumeBaseIds }),
       });
       await refreshJobsAndDocuments(userId);
       setStatus(`Analyzed ${data.analyzed} user vacancies.`);
@@ -779,11 +1059,22 @@ export function App() {
   const visibleJobs = useMemo(() => {
     const titleQuery = vacancyFilters.title.trim().toLowerCase();
     const minScore = Number(vacancyFilters.minScore || 0);
+    const statusFilter = vacancyFilters.status || "ALL";
 
     return jobs.filter((job) => {
       const score = job.userMatch?.matchScore ?? job.matchScore ?? 0;
       const titleMatch = !titleQuery || `${job.title} ${job.company || ""}`.toLowerCase().includes(titleQuery);
-      return titleMatch && score >= minScore;
+      const isApplied = Boolean(job.userMatch?.appliedAt) || job.userMatch?.status === "APPLIED";
+      const isRejected = job.userMatch?.status === "REJECTED";
+      const isIgnored = Boolean(job.userMatch?.ignoredAt) || job.userMatch?.status === "IGNORED";
+      const statusMatch =
+        statusFilter === "ALL" ||
+        (statusFilter === "APPLIED" && isApplied) ||
+        (statusFilter === "REJECTED" && isRejected) ||
+        (statusFilter === "IGNORED" && isIgnored) ||
+        (statusFilter === "ACTIVE" && !isApplied && !isRejected && !isIgnored);
+
+      return titleMatch && score >= minScore && statusMatch;
     });
   }, [jobs, vacancyFilters]);
 
@@ -810,6 +1101,7 @@ export function App() {
   }, [jobs]);
 
   return (
+    <>
       <main className="app">
         <AppSidebar
             availableViews={availableViews}
@@ -863,7 +1155,7 @@ export function App() {
               />
           )}
 
-          <ProcessPanel operation={operation} progress={progress} status={status} lastError={lastError} />
+          <ProcessPanel operation={operation} progress={progress} steps={operationSteps} status={status} />
 
           {view === "overview" && (
               <OverviewView
@@ -958,6 +1250,7 @@ export function App() {
                   onMark={markJob}
                   onDownload={handleDownload}
                   onAnalyzeMissing={() => void analyzeMissingJobs().catch(handleError)}
+                  onGenerateMissingResumes={() => void generateMissingResumesForVisibleJobs().catch(handleError)}
                   onGenerateResume={(jobId) => void generateJobDocument(jobId, "resume").catch(handleError)}
                   onGenerateCoverLetter={(jobId) => void generateJobDocument(jobId, "letter").catch(handleError)}
                   onGeneratePackage={(jobId) => void generateJobDocument(jobId, "package").catch(handleError)}
@@ -968,12 +1261,20 @@ export function App() {
           {view === "settings" && (
               <SettingsView
                   linkedinStatus={linkedinStatus}
+                  gmailStatus={gmailStatus}
                   appliedVacancies={appliedVacancies}
+                  rejectedResumeReport={rejectedResumeReport}
                   onRefreshLinkedIn={() => void loadLinkedInStatus().catch(handleError)}
                   onConnectLinkedIn={() => void connectLinkedIn().catch(handleError)}
                   onDisconnectLinkedIn={() => void disconnectLinkedIn().catch(handleError)}
+                  onRefreshGmail={() => void loadGmailStatus().catch(handleError)}
+                  onConnectGmail={() => void connectGmail().catch(handleError)}
                   onLoadApplications={() => void loadAppliedVacancies().catch(handleError)}
                   onSyncEmailApplications={() => void syncEmailApplications().catch(handleError)}
+                  onLoadRejectedResumeReport={() => void loadRejectedResumeReport().catch(handleError)}
+                  onImprovePromptRules={() => void improvePromptRules().catch(handleError)}
+                  onRepairUserMatches={() => void repairUserMatches().catch(handleError)}
+                  onRunDailyReport={() => void runDailyReport().catch(handleError)}
                   user={user}
                   onSaveDailyAutomation={(dailySettings) => void saveDailyAutomation(dailySettings).catch(handleError)}
               />
@@ -981,5 +1282,7 @@ export function App() {
           {view === "admin" && <AdminView adminUsers={adminUsers} onLoadUsers={() => void loadAdminUsers().catch(handleError)} />}
         </section>
       </main>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+    </>
   );
 }

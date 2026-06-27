@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { SectionHead } from "../../components/ui";
-import type { AppliedVacancy, WorkspaceUser } from "../../types/domain";
+import type { AppliedVacancy, RejectedResumeReport, WorkspaceUser } from "../../types/domain";
 
 type LinkedInStatus = {
   connected: boolean;
@@ -12,15 +12,36 @@ type LinkedInStatus = {
   error?: string;
 };
 
+type GmailStatus = {
+  configured: boolean;
+  connected: boolean;
+  envFallbackConfigured?: boolean;
+  account?: {
+    email?: string | null;
+    connectedAt?: string;
+    lastUsedAt?: string | null;
+    lastError?: string | null;
+    isActive?: boolean;
+  } | null;
+};
+
 type SettingsViewProps = {
   user: WorkspaceUser | null;
   linkedinStatus: LinkedInStatus;
+  gmailStatus: GmailStatus;
   appliedVacancies: AppliedVacancy[];
+  rejectedResumeReport: RejectedResumeReport | null;
   onRefreshLinkedIn: () => void;
   onConnectLinkedIn: () => void;
   onDisconnectLinkedIn: () => void;
+  onRefreshGmail: () => void;
+  onConnectGmail: () => void;
   onLoadApplications: () => void;
   onSyncEmailApplications: () => void;
+  onLoadRejectedResumeReport: () => void;
+  onImprovePromptRules: () => void;
+  onRepairUserMatches: () => void;
+  onRunDailyReport: () => void;
   onSaveDailyAutomation: (settings: { enabled: boolean; time: string; timezone: string }) => void;
 };
 
@@ -32,12 +53,20 @@ function formatDate(value?: string) {
 export function SettingsView({
   user,
   linkedinStatus,
+  gmailStatus,
   appliedVacancies,
+  rejectedResumeReport,
   onRefreshLinkedIn,
   onConnectLinkedIn,
   onDisconnectLinkedIn,
+  onRefreshGmail,
+  onConnectGmail,
   onLoadApplications,
   onSyncEmailApplications,
+  onLoadRejectedResumeReport,
+  onImprovePromptRules,
+  onRepairUserMatches,
+  onRunDailyReport,
   onSaveDailyAutomation,
 }: SettingsViewProps) {
   const isPending = linkedinStatus.connectionStatus === "PENDING";
@@ -95,10 +124,54 @@ export function SettingsView({
       <section className="surface">
         <SectionHead title="Application Feedback" subtitle="Email responses are matched back to generated applications and used for prompt learning." />
 
+        <div className="integration-panel">
+          <div>
+            <p className="eyebrow">Gmail</p>
+            <h3>{gmailStatus.connected ? "Gmail Connected" : gmailStatus.configured ? "Gmail Not Connected" : "Gmail OAuth Not Configured"}</h3>
+          </div>
+
+          <div className="integration-status-grid">
+            <span>Status</span>
+            <strong>{gmailStatus.connected ? "Connected" : gmailStatus.envFallbackConfigured ? "Using env fallback" : "Disconnected"}</strong>
+            <span>Account</span>
+            <strong>{gmailStatus.account?.email || "Not available"}</strong>
+            <span>Connected</span>
+            <strong>{formatDate(gmailStatus.account?.connectedAt)}</strong>
+            <span>Last used</span>
+            <strong>{formatDate(gmailStatus.account?.lastUsedAt || undefined)}</strong>
+          </div>
+
+          {gmailStatus.account?.lastError && <p className="error-text">{gmailStatus.account.lastError}</p>}
+
+          <div className="button-row">
+            <button className="btn btn-secondary" type="button" onClick={onRefreshGmail}>Refresh Gmail</button>
+            <button className="btn btn-primary" type="button" onClick={onConnectGmail} disabled={!gmailStatus.configured}>
+              {gmailStatus.connected ? "Reconnect Gmail" : "Connect Gmail"}
+            </button>
+          </div>
+        </div>
+
         <div className="button-row">
           <button className="btn btn-primary" type="button" onClick={onSyncEmailApplications}>Sync Gmail Responses</button>
           <button className="btn btn-secondary" type="button" onClick={onLoadApplications}>Load History</button>
+          <button className="btn btn-secondary" type="button" onClick={onLoadRejectedResumeReport}>Load Rejection Report</button>
+          <button className="btn btn-primary" type="button" onClick={onImprovePromptRules}>Improve Prompt Rules</button>
         </div>
+
+        {rejectedResumeReport && (
+          <div className="integration-status-grid prompt-learning-grid">
+            <span>Rejections</span>
+            <strong>{rejectedResumeReport.totalRejections}</strong>
+            <span>With resume</span>
+            <strong>{rejectedResumeReport.withResume}</strong>
+            <span>High score rejected</span>
+            <strong>{rejectedResumeReport.highScoreRejected}</strong>
+            <span>Missing external IDs</span>
+            <strong>{rejectedResumeReport.missingExternalJobIds}</strong>
+            <span>Top gaps</span>
+            <strong>{rejectedResumeReport.topMissingSkills.slice(0, 3).map((item) => `${item.skill} (${item.count})`).join(", ") || "None"}</strong>
+          </div>
+        )}
 
         <div className="application-history">
           {appliedVacancies.length ? appliedVacancies.map((item) => (
@@ -158,6 +231,26 @@ export function SettingsView({
           <div className="button-row">
             <button className="btn btn-primary" type="button" onClick={() => onSaveDailyAutomation(dailyAutomation)}>Save Schedule</button>
           </div>
+        </div>
+      </section>
+
+      <section className="surface">
+        <SectionHead title="Maintenance" subtitle="Tools for fixing data issues and triggering manual reports." />
+        <div className="inline-actions">
+          <button className="btn btn-secondary" type="button" onClick={onRunDailyReport}>
+            Run Daily Report
+          </button>
+          <button className="btn btn-secondary" type="button" onClick={onRepairUserMatches}>
+            Repair Job Links
+          </button>
+        </div>
+        <div className="search-explainer">
+          <strong>Run Daily Report</strong>
+          <span>Manually trigger the daily email + Telegram report: syncs Gmail, updates applied vacancy history, and sends a summary.</span>
+        </div>
+        <div className="search-explainer">
+          <strong>Repair Job Links</strong>
+          <span>Ensures all collected vacancies are properly linked to your account. Run if jobs appear missing from your list.</span>
         </div>
       </section>
     </section>

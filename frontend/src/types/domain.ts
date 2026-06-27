@@ -17,6 +17,9 @@ export type WorkspaceUser = {
   dailyAutomationEnabled?: boolean;
   dailyAutomationTime?: string;
   dailyAutomationTimezone?: string;
+  dailyAutomationFullstackResumeBaseId?: string | null;
+  dailyAutomationBackendResumeBaseId?: string | null;
+  dailyAutomationFrontendResumeBaseId?: string | null;
   limits?: PlanLimits;
   profile?: {
     fullName: string;
@@ -89,7 +92,18 @@ export type Job = {
   description?: string;
   matchScore?: number;
   analysis?: { recommendation?: string; reason?: string; matchedSkills?: string[]; missingSkills?: string[] };
-  resumeVersions?: Array<{ id?: string; filePath?: string; pdfFilePath?: string | null; format?: string; createdAt?: string }>;
+  resumeVersions?: Array<{
+    id?: string;
+    filePath?: string;
+    pdfFilePath?: string | null;
+    format?: string;
+    createdAt?: string;
+    atsScore?: number | null;
+    atsIssues?: string[];
+    atsMatchedKeywords?: string[];
+    atsMissingKeywords?: string[];
+    atsValidatedAt?: string | null;
+  }>;
   coverLetters?: Array<{ id?: string; filePath?: string; createdAt?: string }>;
   userMatch?: {
     status?: "NEW" | "ANALYZED" | "SAVED" | "REJECTED" | "APPLIED" | "IGNORED";
@@ -113,12 +127,46 @@ export type AppliedVacancy = {
   lastSeenAt: string;
 };
 
+export type RejectedResumeReport = {
+  totalRejections: number;
+  withResume: number;
+  withoutResume: number;
+  highScoreRejected: number;
+  missingExternalJobIds: number;
+  topMissingSkills: Array<{ skill: string; count: number }>;
+  topRejectionRisks: Array<{ risk: string; count: number }>;
+  items: Array<{
+    rejectionId: string;
+    jobId: string;
+    externalJobId?: string | null;
+    title: string;
+    company: string;
+    jobUrl?: string | null;
+    matchScore: number;
+    recommendation?: string | null;
+    reason?: string | null;
+    resumeId?: string | null;
+    resumeFilePath?: string | null;
+    resumePdfFilePath?: string | null;
+    resumeHeadline?: string | null;
+    matchedSkills: string[];
+    missingSkills: string[];
+    rejectionRisk: string[];
+    createdAt: string;
+  }>;
+};
+
 export type DocumentItem = {
   id?: string;
   documentType: string;
   filePath?: string;
   pdfFilePath?: string | null;
   createdAt?: string;
+  atsScore?: number | null;
+  atsIssues?: string[];
+  atsMatchedKeywords?: string[];
+  atsMissingKeywords?: string[];
+  atsValidatedAt?: string | null;
   job?: Job;
 };
 
