@@ -11,6 +11,7 @@ type GmailConfig = {
 type GmailSearchProgress = {
     page: number;
     fetchedMessages: number;
+    skippedMessages: number;
     pageMessages: number;
     done: boolean;
 };
@@ -346,6 +347,7 @@ export async function searchGmailMessagesForUser(
     query: string,
     maxResults?: number,
     onProgress?: (progress: GmailSearchProgress) => void,
+    skipMessageIds?: ReadonlySet<string>,
 ): Promise<ParsedGmailMessage[]> {
     const config = await getGmailConfig(userId);
 
@@ -364,6 +366,7 @@ export async function searchGmailMessagesForUser(
         ? Math.floor(maxResults)
         : undefined;
     const parsed: ParsedGmailMessage[] = [];
+    let skippedMessages = 0;
     let nextPageToken: string | undefined;
     let page = 0;
 
@@ -388,12 +391,24 @@ export async function searchGmailMessagesForUser(
         onProgress?.({
             page,
             fetchedMessages: parsed.length,
+            skippedMessages,
             pageMessages: messages.length,
             done: false,
         });
 
         for (const message of messages) {
             if (requestedLimit !== undefined && parsed.length >= requestedLimit) break;
+            if (skipMessageIds?.has(message.id)) {
+                skippedMessages += 1;
+                onProgress?.({
+                    page,
+                    fetchedMessages: parsed.length,
+                    skippedMessages,
+                    pageMessages: messages.length,
+                    done: false,
+                });
+                continue;
+            }
 
             const full = await gmailFetch<GmailMessage>(
                 `/users/${encodeURIComponent(config.userId)}/messages/${encodeURIComponent(message.id)}?format=full`,
@@ -403,6 +418,7 @@ export async function searchGmailMessagesForUser(
             onProgress?.({
                 page,
                 fetchedMessages: parsed.length,
+                skippedMessages,
                 pageMessages: messages.length,
                 done: false,
             });
@@ -414,6 +430,7 @@ export async function searchGmailMessagesForUser(
     onProgress?.({
         page,
         fetchedMessages: parsed.length,
+        skippedMessages,
         pageMessages: 0,
         done: true,
     });

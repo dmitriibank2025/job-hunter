@@ -292,7 +292,11 @@ async function syncEmailEvents(userId: string): Promise<{
         process.env.EMAIL_APPLICATION_RESPONSE_QUERY ?? DEFAULT_APPLICATION_QUERY,
         process.env.EMAIL_SENT_APPLICATION_QUERY ?? '(in:sent (resume OR cv OR "cover letter" OR application OR applied OR "my candidacy")) -in:spam -in:trash',
     ];
-    const seen = new Set<string>();
+    const existingEvents = await prisma.emailEvent.findMany({
+        where: { userId },
+        select: { gmailMessageId: true },
+    });
+    const seen = new Set(existingEvents.map((event) => event.gmailMessageId));
     let syncedCount = 0;
     let newEventsCount = 0;
 
@@ -315,12 +319,12 @@ async function syncEmailEvents(userId: string): Promise<{
             updateAutomationProgress({
                 stage: "Email report",
                 message: progress.done
-                    ? `Finished Gmail ${label}: ${progress.fetchedMessages} messages.`
-                    : `Scanning Gmail ${label}: page ${progress.page}, ${progress.fetchedMessages} messages read...`,
+                    ? `Finished Gmail ${label}: ${progress.fetchedMessages} new, ${progress.skippedMessages} already synced.`
+                    : `Scanning Gmail ${label}: page ${progress.page}, ${progress.fetchedMessages} new, ${progress.skippedMessages} already synced...`,
                 percent: Math.min(14, 5 + queryIndex * 3 + Math.min(progress.page, 3)),
                 currentStep: 1,
             });
-        });
+        }, seen);
 
         for (const message of messages) {
             if (seen.has(message.id)) continue;
