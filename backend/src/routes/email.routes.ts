@@ -89,12 +89,12 @@ export function createEmailRouter() {
     });
 
     router.get("/applications", async (req, res) => {
-        const limit = Number(req.query.limit ?? 100);
+        const requestedLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : undefined;
         const userId = await requireUserIdFromRequest(
             req,
             typeof req.query.userId === "string" ? req.query.userId : undefined,
         );
-        const applications = await listAppliedVacancies(userId, Number.isFinite(limit) && limit > 0 ? limit : 100);
+        const applications = await listAppliedVacancies(userId, requestedLimit);
 
         res.json({
             count: applications.length,

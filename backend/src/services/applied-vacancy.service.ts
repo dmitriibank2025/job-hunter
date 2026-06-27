@@ -262,7 +262,6 @@ export async function syncAppliedVacanciesFromEmails(userId: string) {
         orderBy: {
             emailTs: "desc",
         },
-        take: Number(process.env.EMAIL_APPLICATION_HISTORY_LIMIT ?? 500),
     });
     let createdOrUpdated = 0;
 
@@ -331,7 +330,7 @@ export async function syncAppliedVacanciesFromEmails(userId: string) {
                 userId,
                 jobId: job.id,
                 reason: "OTHER",
-                employerFeedback: [event.subject, event.bodyPreview].filter(Boolean).join("\n\n").slice(0, 1_500),
+                employerFeedback: [event.subject, event.bodyPreview].filter(Boolean).join("\n\n"),
                 occurredAt: event.emailTs,
             });
         } else {
@@ -377,7 +376,6 @@ export async function syncAppliedVacanciesFromLocalApplications(userId: string) 
         orderBy: {
             createdAt: "desc",
         },
-        take: Number(process.env.LOCAL_APPLICATION_HISTORY_LIMIT ?? 500),
     });
     let createdOrUpdated = 0;
 
@@ -431,12 +429,12 @@ export async function hasAppliedVacancyForJob(userId: string, job: Pick<ParsedJo
     return Boolean(existing);
 }
 
-export async function listAppliedVacancies(userId: string, limit = 100) {
+export async function listAppliedVacancies(userId: string, limit?: number) {
     return prisma.appliedVacancy.findMany({
         where: { userId },
         orderBy: {
             lastSeenAt: "desc",
         },
-        take: limit,
+        take: Number.isFinite(limit) && limit && limit > 0 ? Math.floor(limit) : undefined,
     });
 }

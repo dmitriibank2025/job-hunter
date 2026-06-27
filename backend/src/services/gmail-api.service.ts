@@ -330,11 +330,11 @@ function parseGmailMessage(message: GmailMessage): ParsedGmailMessage {
     };
 }
 
-export async function searchGmailMessages(query: string, maxResults = 25): Promise<ParsedGmailMessage[]> {
+export async function searchGmailMessages(query: string, maxResults?: number): Promise<ParsedGmailMessage[]> {
     return searchGmailMessagesForUser(undefined, query, maxResults);
 }
 
-export async function searchGmailMessagesForUser(userId: string | undefined, query: string, maxResults = 25): Promise<ParsedGmailMessage[]> {
+export async function searchGmailMessagesForUser(userId: string | undefined, query: string, maxResults?: number): Promise<ParsedGmailMessage[]> {
     const config = await getGmailConfig(userId);
 
     if (!config) {
@@ -348,25 +348,42 @@ export async function searchGmailMessagesForUser(userId: string | undefined, que
             data: { lastUsedAt: new Date(), lastError: null },
         }).catch(() => undefined);
     }
-    const searchParams = new URLSearchParams({
-        q: query,
-        maxResults: String(Math.min(Math.max(maxResults, 1), 100)),
-    });
-    const list = await gmailFetch<GmailListResponse>(
-        `/users/${encodeURIComponent(config.userId)}/messages?${searchParams.toString()}`,
-        accessToken,
-    );
-    const messages = list.messages ?? [];
-
+    const requestedLimit = Number.isFinite(maxResults) && maxResults && maxResults > 0
+        ? Math.floor(maxResults)
+        : undefined;
     const parsed: ParsedGmailMessage[] = [];
+    let nextPageToken: string | undefined;
 
-    for (const message of messages) {
-        const full = await gmailFetch<GmailMessage>(
-            `/users/${encodeURIComponent(config.userId)}/messages/${encodeURIComponent(message.id)}?format=full`,
+    do {
+        const remaining = requestedLimit ? requestedLimit - parsed.length : undefined;
+        if (remaining !== undefined && remaining <= 0) break;
+
+        const searchParams = new URLSearchParams({
+            q: query,
+            maxResults: String(Math.min(remaining ?? 100, 100)),
+        });
+        if (nextPageToken) {
+            searchParams.set("pageToken", nextPageToken);
+        }
+
+        const list = await gmailFetch<GmailListResponse>(
+            `/users/${encodeURIComponent(config.userId)}/messages?${searchParams.toString()}`,
             accessToken,
         );
-        parsed.push(parseGmailMessage(full));
-    }
+        const messages = list.messages ?? [];
+
+        for (const message of messages) {
+            if (requestedLimit !== undefined && parsed.length >= requestedLimit) break;
+
+            const full = await gmailFetch<GmailMessage>(
+                `/users/${encodeURIComponent(config.userId)}/messages/${encodeURIComponent(message.id)}?format=full`,
+                accessToken,
+            );
+            parsed.push(parseGmailMessage(full));
+        }
+
+        nextPageToken = list.nextPageToken;
+    } while (nextPageToken);
 
     return parsed;
 }

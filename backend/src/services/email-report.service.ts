@@ -34,18 +34,6 @@ const DEFAULT_JOB_ALERT_QUERY =
 const DEFAULT_APPLICATION_QUERY =
     '("your application" OR "thanks for applying" OR "thank you for applying" OR "thank you for your application" OR "application received" OR "we received your application" OR "application was viewed" OR "not moving forward" OR unfortunately OR rejected OR interview OR recruiter OR InMail OR "just messaged you" OR "action needed") -in:spam -in:trash';
 
-function lookbackQuery(baseQuery: string): string {
-    const newerThan = process.env.EMAIL_REPORT_NEWER_THAN ?? "7d";
-    return `newer_than:${newerThan} ${baseQuery}`;
-}
-
-function reportLookbackDate(): Date {
-    const hours = Number(process.env.EMAIL_REPORT_LOOKBACK_HOURS ?? 24);
-    const safeHours = Number.isFinite(hours) && hours > 0 ? hours : 24;
-
-    return new Date(Date.now() - safeHours * 60 * 60 * 1000);
-}
-
 function normalizeText(value: string): string {
     return value.toLowerCase();
 }
@@ -62,6 +50,15 @@ function isApplicationAcknowledgement(text: string): boolean {
         text.includes("application has been received") ||
         text.includes("application received") ||
         text.includes("we got it")
+    );
+}
+
+function isSentApplication(message: ParsedGmailMessage, text: string): boolean {
+    const labels = new Set(message.labels.map((label) => label.toUpperCase()));
+
+    return labels.has("SENT") && (
+        /\b(application|applied|candidacy)\b/.test(text) ||
+        /\b(resume|cv|cover letter)\b/.test(text)
     );
 }
 
@@ -140,6 +137,10 @@ function classifyEmail(message: ParsedGmailMessage): EmailEventType {
         message.bodyText ?? "",
     ].join("\n"));
 
+    if (isSentApplication(message, text)) {
+        return "APPLICATION_RECEIVED";
+    }
+
     // Rejection must be checked before positive — many rejections use polite positive-sounding phrases
     if (isRejection(text)) {
         return "REJECTION";
@@ -189,7 +190,10 @@ function classifyEmail(message: ParsedGmailMessage): EmailEventType {
     return "OTHER";
 }
 
-function sourceFromSender(sender?: string): string | undefined {
+function sourceFromMessage(message: ParsedGmailMessage): string | undefined {
+    if (message.labels.some((label) => label.toUpperCase() === "SENT")) return "SENT_EMAIL";
+
+    const sender = message.from;
     if (!sender) return undefined;
 
     const value = sender.toLowerCase();
@@ -228,7 +232,7 @@ function firstUrl(value?: string): string | undefined {
 function preview(value?: string): string | undefined {
     if (!value) return undefined;
 
-    return value.replace(/\s+/g, " ").trim().slice(0, 800);
+    return value.replace(/\s+/g, " ").trim();
 }
 
 async function saveEmailEvent(userId: string, message: ParsedGmailMessage): Promise<{
@@ -244,7 +248,7 @@ async function saveEmailEvent(userId: string, message: ParsedGmailMessage): Prom
     const data = {
         gmailThreadId: message.threadId,
         type: classifyEmail(message),
-        source: sourceFromSender(message.from),
+        source: sourceFromMessage(message),
         subject: message.subject,
         from: message.from,
         snippet: message.snippet,
@@ -282,18 +286,17 @@ async function syncEmailEvents(userId: string): Promise<{
     syncedCount: number;
     newEventsCount: number;
 }> {
-    const limit = Number(process.env.EMAIL_REPORT_SEARCH_LIMIT ?? 30);
-    const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 30;
     const queries = [
         process.env.EMAIL_JOB_ALERT_QUERY ?? DEFAULT_JOB_ALERT_QUERY,
         process.env.EMAIL_APPLICATION_RESPONSE_QUERY ?? DEFAULT_APPLICATION_QUERY,
+        process.env.EMAIL_SENT_APPLICATION_QUERY ?? '(in:sent (resume OR cv OR "cover letter" OR application OR applied OR "my candidacy")) -in:spam -in:trash',
     ];
     const seen = new Set<string>();
     let syncedCount = 0;
     let newEventsCount = 0;
 
     for (const query of queries) {
-        const messages = await searchGmailMessagesForUser(userId, lookbackQuery(query), safeLimit);
+        const messages = await searchGmailMessagesForUser(userId, query);
 
         for (const message of messages) {
             if (seen.has(message.id)) continue;
@@ -350,9 +353,6 @@ function formatEmailEvent(event: EmailEvent, index: number): string {
 }
 
 export function buildEmailReportSection(events: EmailEvent[]): string {
-    const limit = Number(process.env.EMAIL_REPORT_LIMIT ?? 15);
-    const shownEvents = events.slice(0, Number.isFinite(limit) && limit > 0 ? limit : 15);
-    const omittedCount = Math.max(events.length - shownEvents.length, 0);
     const grouped = new Map<EmailEventType, number>();
 
     for (const event of events) {
@@ -365,16 +365,15 @@ export function buildEmailReportSection(events: EmailEvent[]): string {
             .map(([type, count]) => `- ${labelForType(type)}: ${count}`)
             .join("\n")
         : "No email events found.";
-    const eventText = shownEvents.length
-        ? shownEvents.map((event, index) => formatEmailEvent(event, index + 1)).join("\n\n")
+    const eventText = events.length
+        ? events.map((event, index) => formatEmailEvent(event, index + 1)).join("\n\n")
         : "No recent application responses or email job alerts.";
-    const omittedText = omittedCount > 0 ? `\n\n...and ${omittedCount} more email events.` : "";
 
     return [
         "Email report:",
         counts,
         "",
-        eventText + omittedText,
+        eventText,
     ].join("\n");
 }
 
@@ -415,17 +414,10 @@ export async function runEmailReport(userId: string): Promise<EmailReport> {
     const events = await prisma.emailEvent.findMany({
         where: {
             userId,
-            emailTs: {
-                gte: reportLookbackDate(),
-            },
-            type: {
-                not: "OTHER",
-            },
         },
         orderBy: [
             { emailTs: "desc" },
         ],
-        take: 100,
     });
 
     return {
