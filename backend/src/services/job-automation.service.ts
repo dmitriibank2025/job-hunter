@@ -7,6 +7,8 @@ import { runEmailReport } from "./email-report.service";
 import { listAppliedVacancies } from "./applied-vacancy.service";
 import { sendTelegramMessage } from "./telegram.service";
 import { analyzeJob } from "./job-analyzer.service";
+import { selectResumeBaseForJob } from "./resume-base-selector.service";
+import type { ResumeBaseSelectionMap } from "./resume-base-selector.service";
 import {
     filterJobsBySearchPreferences,
     normalizeSearchPreferences,
@@ -110,14 +112,9 @@ function buildFollowUpSection(entries: FollowUpEntry[], title: string): string {
         return `${title}\nNone.`;
     }
 
-    const limit = Number(process.env.JOB_REPORT_LIMIT ?? 10);
-    const shown = entries.slice(0, Number.isFinite(limit) && limit > 0 ? limit : 10);
-    const omitted = Math.max(entries.length - shown.length, 0);
-
     return [
         title,
-        shown.map((entry, index) => `${index + 1}. ${formatFollowUpEntry(entry)}`).join("\n\n"),
-        omitted > 0 ? `\n...and ${omitted} more.` : "",
+        entries.map((entry, index) => `${index + 1}. ${formatFollowUpEntry(entry)}`).join("\n\n"),
     ].join("\n");
 }
 
@@ -187,43 +184,11 @@ function buildAutomationMessage(
         sections.push("");
     }
 
-    if (skippedJobs.length > 0) {
-        const limit = 5;
-        const shown = skippedJobs.slice(0, limit);
-        const omitted = Math.max(skippedJobs.length - limit, 0);
-
-        sections.push(
-            `⊘ SKIPPED (Not Matching) (${skippedJobs.length})`,
-            "",
-        );
-
-        for (let i = 0; i < shown.length; i++) {
-            const {job, reason} = shown[i];
-            sections.push(
-                `${i + 1}. ${job.title} @ ${job.company}`,
-                `   Reason: ${reason}`,
-            );
-        }
-
-        if (omitted > 0) {
-            sections.push(`\n...and ${omitted} more skipped jobs`);
-        }
-        sections.push("");
-    }
-
     if (failedResumes.length > 0) {
         sections.push(
-            `❌ FAILED RESUMES (${failedResumes.length})`,
+            `❌ Failed resume details are available in backend logs. Count: ${failedResumes.length}`,
             "",
         );
-
-        for (const {job, error} of failedResumes.slice(0, 3)) {
-            sections.push(
-                `• ${job.title} @ ${job.company}`,
-                `  Error: ${error}`,
-            );
-        }
-        sections.push("");
     }
 
     sections.push(
@@ -291,9 +256,6 @@ function emptyEmailReport() {
     } as Awaited<ReturnType<typeof runEmailReport>>;
 }
 
-export async function runJobAutomationWorkflow(searchLocation?: string): Promise<JobAutomationReport> {
-    return runJobAutomationWorkflowWithSource({ searchLocation, sourceMode: "PROVIDERS" });
-}
 
 // Параллельная обработка с ограничением конкурентности
 async function processBatch<T, R>(
@@ -338,6 +300,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
     preferences?: SearchPreferences;
     userId?: string;
     resumeBaseId?: string;
+    resumeBaseIds?: ResumeBaseSelectionMap;
     allowGlobalLinkedInFallback?: boolean;
 }): Promise<JobAutomationReport> {
     const { searchLocation, sourceMode = "PROVIDERS" } = options;
@@ -346,6 +309,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
         throw new Error("userId is required for job automation workflow");
     }
     const preferences = normalizeSearchPreferences(options.preferences);
+    const selectedResumeBaseIds = new Map<string, string>();
     const requiredMatchScore = preferences.minMatchScore ?? REQUIRED_MATCH_SCORE;
     const collectedAt = new Date();
     startAutomationProgress(5);
@@ -375,13 +339,14 @@ export async function runJobAutomationWorkflowWithSource(options: {
 
         console.log(`\n╔════════════════════════════════════════════════════════╗`);
         console.log(`║         JOB AUTOMATION WORKFLOW STARTED                ║`);
+        console.log(`║         Source mode: ${sourceMode.padEnd(33, " ")}║`);
         console.log(`╚════════════════════════════════════════════════════════╝`);
-        console.log(`[Job Automation] Starting job collection...`);
+        console.log(`[Job Automation] Starting job collection (${sourceMode})...`);
 
         updateAutomationProgress({
-            stage: sourceMode === "EMAIL" ? "Providers" : "Collecting",
+            stage: sourceMode === "EMAIL" ? "Email links" : "Collecting",
             message: sourceMode === "EMAIL"
-                ? "Collecting jobs from providers..."
+                ? "Collecting jobs from email links..."
                 : sourceMode === "CENTER_ISRAEL"
                     ? "Collecting jobs from 100 firms..."
                     : "Collecting jobs from providers...",
@@ -453,8 +418,16 @@ export async function runJobAutomationWorkflowWithSource(options: {
                 currentStep: 3,
             });
 
-            console.log(`  ├─ Analyzing: "${job.title}" at ${job.company}`);
-            const analyzed = await analyzeJob(job.id, { userId, resumeBaseId });
+            const selectedResumeBase = await selectResumeBaseForJob(userId, job, resumeBaseId, options.resumeBaseIds);
+            selectedResumeBaseIds.set(job.id, selectedResumeBase.id);
+            console.log(
+                `  ├─ Analyzing: "${job.title}" at ${job.company} ` +
+                `[base: ${selectedResumeBase.name}, target: ${selectedResumeBase.inferredTarget}]`,
+            );
+            const analyzed = await analyzeJob(job.id, {
+                userId,
+                resumeBaseId: selectedResumeBase.id,
+            });
 
             if (userId) {
                 await upsertUserJobMatch(userId, job.id, {
@@ -505,7 +478,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
                 console.log(`  ├─ ⊘ Skipped: "${job.title}" (Recommendation: ${recommendation})`);
                 return false;
             }
-            if (job.matchScore && job.matchScore < requiredMatchScore) {
+            if (job.matchScore != null && job.matchScore < requiredMatchScore) {
                 console.log(`  ├─ ⊘ Skipped: "${job.title}" (Score: ${job.matchScore}/${requiredMatchScore})`);
                 return false;
             }
@@ -527,10 +500,12 @@ export async function runJobAutomationWorkflowWithSource(options: {
                 currentStep: 4,
             });
 
+            const selectedResumeBaseId = selectedResumeBaseIds.get(job.id)
+                ?? (await selectResumeBaseForJob(userId, job, resumeBaseId, options.resumeBaseIds)).id;
             console.log(`  ├─ ✓ Generating resume and cover letter for: "${job.title}"`);
             const [resume, coverLetter] = await Promise.all([
-                generateResumeForJob(job.id, { userId, resumeBaseId }),
-                generateCoverLetterForJob(job.id, { userId, resumeBaseId }),
+                generateResumeForJob(job.id, { userId, resumeBaseId: selectedResumeBaseId }),
+                generateCoverLetterForJob(job.id, { userId, resumeBaseId: selectedResumeBaseId }),
             ]);
 
             console.log(

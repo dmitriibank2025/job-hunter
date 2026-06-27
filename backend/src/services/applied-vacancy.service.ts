@@ -300,10 +300,31 @@ export async function syncAppliedVacanciesFromEmails(userId: string) {
 
         if (result) createdOrUpdated += 1;
 
-        if (!result || (status !== "REJECTION" && status !== "POSITIVE_RESPONSE")) continue;
+        if (!result) continue;
 
         const job = await findMatchingUserJob(userId, title, company, event.url);
         if (!job) continue;
+
+        // Sync email status back to UserJobMatch so both counters stay in sync
+        const matchUpdate: Record<string, unknown> = {};
+        if (status === "APPLICATION_RECEIVED" || status === "APPLIED") {
+            matchUpdate.appliedAt = event.emailTs;
+        }
+        if (status === "REJECTION" || status === "POSITIVE_RESPONSE") {
+            matchUpdate.appliedAt = event.emailTs; // confirm applied
+        }
+        if (Object.keys(matchUpdate).length) {
+            await prisma.userJobMatch.updateMany({
+                where: {
+                    userId,
+                    jobId: job.id,
+                    appliedAt: null, // only set if not already marked
+                },
+                data: matchUpdate,
+            });
+        }
+
+        if (status !== "REJECTION" && status !== "POSITIVE_RESPONSE") continue;
 
         if (status === "REJECTION") {
             await recordRejection({

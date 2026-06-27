@@ -119,6 +119,38 @@ type RawRule = {
     confidence: number;
 };
 
+type RejectedResumeReportItem = {
+    rejectionId: string;
+    jobId: string;
+    externalJobId: string | null;
+    title: string;
+    company: string;
+    jobUrl: string | null;
+    matchScore: number;
+    recommendation: string | null;
+    reason: string | null;
+    reasonType: RejectionReasonType;
+    resumeId: string | null;
+    resumeFilePath: string | null;
+    resumePdfFilePath: string | null;
+    resumeHeadline: string | null;
+    matchedSkills: string[];
+    missingSkills: string[];
+    rejectionRisk: string[];
+    createdAt: Date;
+};
+
+type RejectedResumeReport = {
+    totalRejections: number;
+    withResume: number;
+    withoutResume: number;
+    highScoreRejected: number;
+    missingExternalJobIds: number;
+    topMissingSkills: Array<{ skill: string; count: number }>;
+    topRejectionRisks: Array<{ risk: string; count: number }>;
+    items: RejectedResumeReportItem[];
+};
+
 // ─── ENUM HELPERS ─────────────────────────────────────────────────────────────
 
 function toRuleCategory(raw?: string): PromptRuleCategory {
@@ -138,6 +170,50 @@ function toReasonType(raw?: string): RejectionReasonType {
     return valid.includes(upper)
         ? (upper as RejectionReasonType)
         : RejectionReasonType.OTHER;
+}
+
+function asStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        : [];
+}
+
+function countTop(values: string[], limit = 10): Array<{ skill: string; count: number }> {
+    const counts = new Map<string, { label: string; count: number }>();
+
+    for (const value of values) {
+        const label = value.trim();
+        const key = label.toLowerCase();
+        const current = counts.get(key);
+        counts.set(key, { label: current?.label ?? label, count: (current?.count ?? 0) + 1 });
+    }
+
+    return [...counts.values()]
+        .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+        .slice(0, limit)
+        .map((item) => ({ skill: item.label, count: item.count }));
+}
+
+function resumeHeadline(content?: string | null): string | null {
+    if (!content) return null;
+
+    const lines = content
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^#+\s*/, "").trim())
+        .filter(Boolean);
+
+    return lines[1] ?? lines[0] ?? null;
+}
+
+function reportAnalysis(recordAnalysis: unknown, matchAnalysis: unknown) {
+    const analysis = (matchAnalysis && typeof matchAnalysis === "object" ? matchAnalysis : recordAnalysis) as Record<string, unknown> | null;
+
+    return {
+        recommendation: typeof analysis?.recommendation === "string" ? analysis.recommendation : null,
+        matchedSkills: asStringArray(analysis?.matchedSkills),
+        missingSkills: asStringArray(analysis?.missingSkills),
+        rejectionRisk: asStringArray(analysis?.rejectionRisk),
+    };
 }
 
 // ─── 1. ЗАПИСЬ ОТКАЗА ────────────────────────────────────────────────────────
@@ -206,6 +282,70 @@ export async function recordRejection(input: RecordRejectionInput): Promise<void
             logger.error({ err, userId }, "[PromptLearning] Auto-refinement failed");
         });
     }
+}
+
+export async function getRejectedResumeReport(userId: string): Promise<RejectedResumeReport> {
+    const rejections = await prisma.rejectionRecord.findMany({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+        include: {
+            job: {
+                include: {
+                    resumeVersions: {
+                        where: { userId },
+                        orderBy: { createdAt: "desc" },
+                        take: 1,
+                    },
+                    userMatches: {
+                        where: { userId },
+                        orderBy: { updatedAt: "desc" },
+                        take: 1,
+                    },
+                },
+            },
+        },
+    });
+
+    const items = rejections.map<RejectedResumeReportItem>((rejection) => {
+        const resume = rejection.job.resumeVersions[0];
+        const match = rejection.job.userMatches[0];
+        const analysis = reportAnalysis(rejection.analysis, match?.analysis);
+
+        return {
+            rejectionId: rejection.id,
+            jobId: rejection.jobId,
+            externalJobId: rejection.job.externalJobId,
+            title: rejection.jobTitle,
+            company: rejection.company,
+            jobUrl: rejection.job.url,
+            matchScore: match?.matchScore ?? rejection.matchScore,
+            recommendation: analysis.recommendation,
+            reason: rejection.reason,
+            reasonType: rejection.reasonType,
+            resumeId: resume?.id ?? null,
+            resumeFilePath: resume?.filePath ?? null,
+            resumePdfFilePath: resume?.pdfFilePath ?? null,
+            resumeHeadline: resumeHeadline(resume?.content),
+            matchedSkills: analysis.matchedSkills,
+            missingSkills: analysis.missingSkills,
+            rejectionRisk: analysis.rejectionRisk,
+            createdAt: rejection.createdAt,
+        };
+    });
+
+    return {
+        totalRejections: items.length,
+        withResume: items.filter((item) => item.resumeId).length,
+        withoutResume: items.filter((item) => !item.resumeId).length,
+        highScoreRejected: items.filter((item) => item.matchScore >= 80).length,
+        missingExternalJobIds: items.filter((item) => !item.externalJobId).length,
+        topMissingSkills: countTop(items.flatMap((item) => item.missingSkills)),
+        topRejectionRisks: countTop(items.flatMap((item) => item.rejectionRisk)).map((item) => ({
+            risk: item.skill,
+            count: item.count,
+        })),
+        items,
+    };
 }
 
 // ─── 2. ГЕНЕРАЦИЯ ПРАВИЛ ──────────────────────────────────────────────────────
@@ -384,13 +524,14 @@ export async function buildAdaptiveAnalysisPrompt(params: {
     fullName: string;
     email: string;
     resume: string;
+    masterSkills?: string;
     jobTitle: string;
     jobCompany: string;
     jobLocation: string;
     jobDescription: string;
 }): Promise<string> {
     const {
-        userId, fullName, email, resume,
+        userId, fullName, email, resume, masterSkills,
         jobTitle, jobCompany, jobLocation, jobDescription,
     } = params;
 
@@ -436,6 +577,17 @@ reduce the match score accordingly and explain why.
 `
         : "";
 
+    const masterSkillsSection = masterSkills
+        ? `
+════════════════════════════════════════
+CANDIDATE COMPLETE SKILL SET
+(aggregated from all base resumes — use this to avoid penalising skills
+ that appear in a different resume variant than the one shown above)
+════════════════════════════════════════
+${masterSkills}
+`
+        : "";
+
     return `
 You are an expert technical recruiter analyzing job fit for a candidate.
 Your analysis is calibrated by real rejection data from this candidate's history.
@@ -448,7 +600,7 @@ Email: ${email}
 
 Resume:
 ${resume}
-${rulesSection}${rejectionsSection}
+${masterSkillsSection}${rulesSection}${rejectionsSection}
 ════════════════════════════════════════
 TARGET VACANCY
 ════════════════════════════════════════
@@ -475,6 +627,20 @@ Scoring guide:
 - 60–79:  Good match, worth applying
 - 40–59:  Partial match, apply only if few better options
 - 0–39:   Poor match, skip
+
+Critical rejection calibration:
+- If a vacancy requires a core technology that is absent from the resume, cap the score at 79 and use MAYBE or SKIP.
+- If the role is mobile-specific and requires Flutter, Dart, native Android/iOS, app store release, or mobile CI/CD, and the resume is not mobile-specific, cap the score at 39 and use SKIP.
+- If the role requires Vue.js as a primary frontend framework and the resume only shows React, cap the score at 79 unless the job clearly accepts React as an alternative.
+- If the role requires 7+ years of frontend-only experience or deep frontend specialization, and the resume is mainly full-stack/backend with about 5+ years total, cap the score at 74.
+- If the role requires Go, Java, Spring Boot, Play Framework, Scala, C#, or C++ as primary backend technologies and the resume is mainly Node.js/TypeScript, cap the score at 74 unless the job states these are optional.
+- If the role is explicitly AI/LLM/ML product engineering and the resume only mentions AI-assisted developer tools without shipped AI/LLM features, cap the score at 79.
+- MANAGEMENT ROLES — cap at 39 and use SKIP if ANY of the following is true:
+  • The job title contains "Team Lead", "Tech Lead", "Engineering Manager", "Group Lead", "Squad Lead", "Head of Engineering", "VP Engineering", "Director of Engineering", "Principal Engineer", or "Staff Engineer".
+  • The job description states that managing, hiring, or performance-reviewing a team of engineers is a PRIMARY responsibility (not just mentoring or occasional leadership).
+  The candidate is an individual contributor with 5+ years and is NOT seeking management or principal-level roles.
+- Do not allow a score above 80 when missingSkills contains multiple hard requirements.
+- High scores must be reserved for roles where the candidate matches the primary stack, seniority, and role type, not only adjacent transferable experience.
 
 Return ONLY this JSON object, with no markdown and no extra keys:
 {

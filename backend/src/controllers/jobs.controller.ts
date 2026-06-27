@@ -1,12 +1,9 @@
 import type { Request, Response } from "express";
 import { requiredParam } from "./request-params";
-import { getCenterIsraelCompanyTargets } from "../providers/center-israel.provider";
 import { requireAuthUser, requireUserIdFromRequest } from "../middleware/auth.middleware";
 import { analyzeJob } from "../services/job-analyzer.service";
 import { runJobAutomationWorkflowWithSource } from "../services/job-automation.service";
 import { getAutomationProgress } from "../services/job-automation-progress.service";
-import { collectJobs } from "../services/job-collector.service";
-import { createJobIfNew } from "../services/job-deduplication.service";
 import { runDailyJobReport } from "../services/daily-job-report.service";
 import {
     generateApplicationPackageForJob,
@@ -15,15 +12,16 @@ import {
 } from "../services/resume-generator.service";
 import { submitCompanyApplicationForJob } from "../services/company-application-submitter.service";
 import { listCompanyPriorityTargets } from "../services/company-priority.service";
+import { sendTelegramMessage } from "../services/telegram.service";
 import { upsertUserJobMatch } from "../services/user-workspace.service";
 import { ensureUserJobMatchesForUserArtifacts } from "../services/user-job-repair.service";
-import { recordRejection } from "../services/prompt-learning.service";
+import { generatePromptRefinement, getRejectedResumeReport, recordRejection } from "../services/prompt-learning.service";
 import {
     automationRunSchema,
-    createJobSchema,
     manualVacancyExtractSchema,
     manualVacancySchema,
     submitApplicationSchema,
+    telegramNotificationSchema,
     userActionSchema,
     userJobMatchSchema,
 } from "../validation";
@@ -38,16 +36,6 @@ import {
     listTopUserJobs,
     listUserJobs,
 } from "../services/job-query.service";
-
-export async function createJob(req: Request, res: Response) {
-    const data = createJobSchema.parse(req.body);
-    const result = await createJobIfNew(data);
-
-    res.status(result.isNew ? 201 : 200).json({
-        duplicate: !result.isNew,
-        job: result.job,
-    });
-}
 
 export async function extractManualVacancy(req: Request, res: Response) {
     const input = manualVacancyExtractSchema.parse(req.body ?? {});
@@ -75,22 +63,6 @@ export async function createManualVacancy(req: Request, res: Response) {
     res.status(statusCode).json(body);
 }
 
-export async function collectUserJobs(req: Request, res: Response) {
-    const body = automationRunSchema.parse(req.body ?? {});
-    const userId = await requireUserIdFromRequest(req, body.userId);
-    const jobs = await collectJobs({
-        userId,
-        searchLocation: body.searchLocation,
-        preferences: body.preferences,
-    });
-
-    res.json({
-        success: true,
-        count: jobs.length,
-        jobs,
-    });
-}
-
 export async function createDailyReport(req: Request, res: Response) {
     const body = userActionSchema.parse(req.body ?? {});
     const userId = await requireUserIdFromRequest(req, body.userId);
@@ -107,6 +79,17 @@ export async function createDailyReport(req: Request, res: Response) {
     });
 }
 
+export async function sendTelegramNotification(req: Request, res: Response) {
+    const body = telegramNotificationSchema.parse(req.body ?? {});
+    await requireUserIdFromRequest(req, body.userId);
+    const telegramSent = await sendTelegramMessage(body.message);
+
+    res.json({
+        success: true,
+        telegramSent,
+    });
+}
+
 export async function runAutomation(req: Request, res: Response) {
     const body = automationRunSchema.parse(req.body ?? {});
     const userId = await requireUserIdFromRequest(req, body.userId);
@@ -116,6 +99,7 @@ export async function runAutomation(req: Request, res: Response) {
         sourceMode: body.sourceMode ?? "PROVIDERS",
         preferences: body.preferences,
         resumeBaseId: body.resumeBaseId,
+        resumeBaseIds: body.resumeBaseIds,
     });
 
     res.json({
@@ -167,20 +151,10 @@ export async function listCenterIsraelCompanies(req: Request, res: Response) {
     });
 }
 
-export function listStaticCenterIsraelCompanies(_req: Request, res: Response) {
-    const companies = getCenterIsraelCompanyTargets();
-
-    res.json({
-        success: true,
-        count: companies.length,
-        companies,
-    });
-}
-
 export async function analyzeAllMissingJobs(req: Request, res: Response) {
     const options = userActionSchema.parse(req.body ?? {});
     const userId = await requireUserIdFromRequest(req, options.userId);
-    const result = await analyzeMissingUserJobs(userId, options.resumeBaseId);
+    const result = await analyzeMissingUserJobs(userId, options.resumeBaseId, options.resumeBaseIds);
 
     res.json(result);
 }
@@ -214,6 +188,27 @@ export async function getStatistics(req: Request, res: Response) {
     res.json(await getUserJobStatistics(userId));
 }
 
+export async function getRejectionsResumeReport(req: Request, res: Response) {
+    const userId = await requireUserIdFromRequest(
+        req,
+        typeof req.query.userId === "string" ? req.query.userId : undefined,
+    );
+
+    res.json(await getRejectedResumeReport(userId));
+}
+
+export async function refinePromptRules(req: Request, res: Response) {
+    const options = userActionSchema.parse(req.body ?? {});
+    const userId = await requireUserIdFromRequest(req, options.userId);
+    const rules = await generatePromptRefinement(userId);
+
+    res.json({
+        success: true,
+        rulesGenerated: rules.length,
+        rules,
+    });
+}
+
 export async function listJobs(req: Request, res: Response) {
     const requestedUserId = typeof req.query.userId === "string" ? req.query.userId : undefined;
     const userId = await requireUserIdFromRequest(req, requestedUserId);
@@ -225,7 +220,7 @@ export async function analyzeOneJob(req: Request, res: Response) {
     const jobId = requiredParam(req, "id");
     const options = userActionSchema.parse(req.body ?? {});
     const userId = await requireUserIdFromRequest(req, options.userId);
-    const result = await analyzeJob(jobId, { userId, resumeBaseId: options.resumeBaseId });
+    const result = await analyzeJob(jobId, { userId, resumeBaseId: options.resumeBaseId, resumeBaseIds: options.resumeBaseIds });
 
     res.json(result);
 }
@@ -240,7 +235,7 @@ export async function updateUserMatch(req: Request, res: Response) {
         await recordRejection({
             userId,
             jobId,
-            reason: "OTHER",
+            reason: input.rejectionReason ?? "OTHER",
             employerFeedback: input.notes,
         });
     }
@@ -255,7 +250,7 @@ export async function generateResume(req: Request, res: Response) {
     const jobId = requiredParam(req, "id");
     const options = userActionSchema.parse(req.body ?? {});
     const userId = await requireUserIdFromRequest(req, options.userId);
-    const resume = await generateResumeForJob(jobId, { userId, resumeBaseId: options.resumeBaseId });
+    const resume = await generateResumeForJob(jobId, { userId, resumeBaseId: options.resumeBaseId, resumeBaseIds: options.resumeBaseIds });
 
     res.json(resume);
 }
@@ -264,7 +259,7 @@ export async function generateCoverLetter(req: Request, res: Response) {
     const jobId = requiredParam(req, "id");
     const options = userActionSchema.parse(req.body ?? {});
     const userId = await requireUserIdFromRequest(req, options.userId);
-    const coverLetter = await generateCoverLetterForJob(jobId, { userId, resumeBaseId: options.resumeBaseId });
+    const coverLetter = await generateCoverLetterForJob(jobId, { userId, resumeBaseId: options.resumeBaseId, resumeBaseIds: options.resumeBaseIds });
 
     res.json(coverLetter);
 }
@@ -273,7 +268,7 @@ export async function generateApplicationPackage(req: Request, res: Response) {
     const jobId = requiredParam(req, "id");
     const options = userActionSchema.parse(req.body ?? {});
     const userId = await requireUserIdFromRequest(req, options.userId);
-    const result = await generateApplicationPackageForJob(jobId, { userId, resumeBaseId: options.resumeBaseId });
+    const result = await generateApplicationPackageForJob(jobId, { userId, resumeBaseId: options.resumeBaseId, resumeBaseIds: options.resumeBaseIds });
 
     res.json(result);
 }

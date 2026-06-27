@@ -3,6 +3,7 @@ import { LANGUAGE_OPTIONS } from "../services/user-workspace.service";
 
 export const createJobSchema = z.object({
     title: z.string().min(2),
+    externalJobId: z.string().trim().min(1).optional(),
     company: z.string().optional(),
     location: z.string().optional(),
     url: z.string().url().optional(),
@@ -13,12 +14,18 @@ export const createJobSchema = z.object({
 
 export const manualVacancySchema = z.object({
     title: z.string().trim().min(2).optional(),
+    externalJobId: z.string().trim().min(1).optional(),
     company: z.string().trim().min(1).optional(),
     location: z.string().trim().min(1).optional(),
     url: z.string().trim().url().optional(),
     description: z.string().trim().optional(),
     userId: z.string().trim().uuid().optional(),
     resumeBaseId: z.string().trim().uuid().optional(),
+    resumeBaseIds: z.object({
+        FULLSTACK: z.string().trim().uuid().optional(),
+        BACKEND: z.string().trim().uuid().optional(),
+        FRONTEND: z.string().trim().uuid().optional(),
+    }).optional(),
 }).refine(
     (data) => Boolean(data.url) || Boolean(data.description && data.description.length >= 50),
     { message: "Provide either a vacancy URL or at least 50 characters of vacancy text." },
@@ -37,6 +44,11 @@ export const submitApplicationSchema = z.object({
 export const automationRunSchema = z.object({
     userId: z.string().trim().uuid().optional(),
     resumeBaseId: z.string().trim().uuid().optional(),
+    resumeBaseIds: z.object({
+        FULLSTACK: z.string().trim().uuid().optional(),
+        BACKEND: z.string().trim().uuid().optional(),
+        FRONTEND: z.string().trim().uuid().optional(),
+    }).optional(),
     searchLocation: z.string().min(2).optional(),
     sourceMode: z.enum(["EMAIL", "PROVIDERS", "CENTER_ISRAEL"]).optional(),
     preferences: z.object({
@@ -147,6 +159,15 @@ export const linkedinAccountSchema = z.object({
 export const userActionSchema = z.object({
     userId: z.string().trim().uuid().optional(),
     resumeBaseId: z.string().trim().uuid().optional(),
+    resumeBaseIds: z.object({
+        FULLSTACK: z.string().trim().uuid().optional(),
+        BACKEND: z.string().trim().uuid().optional(),
+        FRONTEND: z.string().trim().uuid().optional(),
+    }).optional(),
+});
+
+export const telegramNotificationSchema = userActionSchema.extend({
+    message: z.string().trim().min(1).max(500_000),
 });
 
 export const uploadedResumeFileSchema = z.object({
@@ -158,7 +179,24 @@ export const userDailyAutomationSchema = z.object({
     enabled: z.boolean(),
     time: z.string().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:mm time format."),
     timezone: z.string().trim().min(2).default("Asia/Jerusalem"),
+    resumeBaseIds: z.object({
+        FULLSTACK: z.string().trim().uuid().optional(),
+        BACKEND: z.string().trim().uuid().optional(),
+        FRONTEND: z.string().trim().uuid().optional(),
+    }).optional(),
 });
+
+export const REJECTION_REASONS = [
+    "WRONG_TECH_STACK",
+    "WRONG_SENIORITY",
+    "OVERQUALIFIED",
+    "UNDERQUALIFIED",
+    "LOCATION_MISMATCH",
+    "COMPANY_TYPE_MISMATCH",
+    "SALARY_MISMATCH",
+    "NO_RESPONSE",
+    "OTHER",
+] as const;
 
 export const userJobMatchSchema = z.object({
     userId: z.string().trim().uuid().optional(),
@@ -168,4 +206,5 @@ export const userJobMatchSchema = z.object({
     applied: z.boolean().optional(),
     ignored: z.boolean().optional(),
     notes: z.string().trim().optional(),
+    rejectionReason: z.enum(REJECTION_REASONS).optional(),
 });

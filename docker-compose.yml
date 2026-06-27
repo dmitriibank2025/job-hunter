@@ -20,6 +20,8 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        INSTALL_PLAYWRIGHT: ${INSTALL_PLAYWRIGHT:-false}
     container_name: job-hunter-backend
     restart: always
     ports:
@@ -37,15 +39,21 @@ services:
         STORAGE_DIR: /app/storage
         TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
         TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+        ATS_RESUME_MIN_SCORE: ${ATS_RESUME_MIN_SCORE:-75}
+        ATS_RESUME_ENFORCE: ${ATS_RESUME_ENFORCE:-false}
+        MIN_MATCH_SCORE: ${MIN_MATCH_SCORE:-70}
+        JOB_SEARCH_EXCLUDED_KEYWORDS: ${JOB_SEARCH_EXCLUDED_KEYWORDS:-}
         JOB_REPORT_CRON: ${JOB_REPORT_CRON:-0 9 * * *}
         JOB_REPORT_TIMEZONE: ${JOB_REPORT_TIMEZONE:-Asia/Jerusalem}
         JOB_REPORT_LIMIT: ${JOB_REPORT_LIMIT:-20}
         DAILY_JOB_REPORT_ENABLED: ${DAILY_JOB_REPORT_ENABLED:-true}
         JOB_SEARCH_KEYWORDS: full stack developer,backend developer,node.js typescript,react node.js aws
-        LINKEDIN_SEARCH_URLS: ${LINKEDIN_SEARCH_URLS:-https://www.linkedin.com/jobs/search}
+        LINKEDIN_SEARCH_URLS: ${LINKEDIN_SEARCH_URLS:-https://www.linkedin.com/jobs/search,https://www.linkedin.com/jobs/collections/top-applicant/}
         LINKEDIN_STORAGE_STATE: storage/linkedin_auth.json
         LINKEDIN_RECOMMENDED_OUTPUT: storage/linkedin_recommended_jobs.json
-        LINKEDIN_HEADLESS: ${LINKEDIN_HEADLESS:-true}
+        LINKEDIN_HEADLESS: "true"
+        LINKEDIN_CONNECT_HEADLESS: "true"
+        LINKEDIN_CONNECT_BROWSER_CHANNEL: ""
         LINKEDIN_AUTH_TIMEOUT_MS: ${LINKEDIN_AUTH_TIMEOUT_MS:-300000}
         LINKEDIN_EMAIL: ${LINKEDIN_EMAIL:-}
         LINKEDIN_PASSWORD: ${LINKEDIN_PASSWORD:-}
@@ -57,6 +65,7 @@ services:
         GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
         GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
         GMAIL_USER_ID: ${GMAIL_USER_ID:-me}
+        GMAIL_REDIRECT_URI: ${GMAIL_REDIRECT_URI:-http://localhost:4000/oauth/google/callback}
         EMAIL_REPORT_ENABLED: ${EMAIL_REPORT_ENABLED:-true}
         GMAIL_REFRESH_TOKEN: ${GMAIL_REFRESH_TOKEN:-}
     volumes:

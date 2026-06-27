@@ -36,13 +36,16 @@ const LINKEDIN_STORAGE_STATE_PATH =
 
 const LINKEDIN_PAGE_SIZE          = toPositiveInt(process.env.LINKEDIN_PAGE_SIZE,          25);
 const LINKEDIN_MAX_PAGES          = toPositiveInt(process.env.LINKEDIN_MAX_PAGES,          2);
+const LINKEDIN_SEARCH_TIMEOUT_MS  = toPositiveInt(process.env.LINKEDIN_SEARCH_TIMEOUT_MS,  60_000);
 const LINKEDIN_DETAIL_TIMEOUT_MS  = toPositiveInt(process.env.LINKEDIN_DETAIL_TIMEOUT_MS,  12_000);
 const LINKEDIN_MAX_CARDS_PER_PAGE = toPositiveInt(process.env.LINKEDIN_MAX_CARDS_PER_PAGE, 25);
 const LINKEDIN_EMPTY_PAGE_STOP    = toPositiveInt(process.env.LINKEDIN_EMPTY_PAGE_STOP,    2);
+const LINKEDIN_EMPTY_PAGE_RETRIES = toPositiveInt(process.env.LINKEDIN_EMPTY_PAGE_RETRIES, 2);
 const LINKEDIN_DETAIL_CONCURRENCY = toPositiveInt(process.env.LINKEDIN_DETAIL_CONCURRENCY, 1);
 // В Docker нет XServer — headless по умолчанию.
 // LINKEDIN_HEADLESS=false только для локальной отладки.
-const LINKEDIN_HEADLESS = process.env.LINKEDIN_HEADLESS !== "false";
+const LINUX_WITHOUT_DISPLAY = process.platform === "linux" && !process.env.DISPLAY;
+const LINKEDIN_HEADLESS = LINUX_WITHOUT_DISPLAY || process.env.LINKEDIN_HEADLESS !== "false";
 
 const DESCRIPTION_MIN_LENGTH = 300;
 // Задержка между деталями: базовая + случайный джиттер до 2с
@@ -51,6 +54,7 @@ const DETAIL_JITTER_MAX_MS   = 2_000;
 
 const WAIT_FOR_LIST_TIMEOUT_MS = 15_000;
 const WAIT_AFTER_GOTO_MS       = 1_500;
+const WAIT_AFTER_EMPTY_PAGE_MS = 3_000;
 
 const LINKEDIN_PREFILTER_TITLE_PATTERNS = [
     /full[\s-]?stack/i,
@@ -71,6 +75,15 @@ const DESCRIPTION_SELECTORS = [
     ".show-more-less-html__markup",
     ".description__text",
 ] as const;
+
+const JOB_CARD_SELECTOR = [
+    "li.scaffold-layout__list-item[data-occludable-job-id]",
+    "li[data-occludable-job-id]",
+    "[data-job-id]",
+    "[data-entity-urn*='urn:li:jobPosting:']",
+    "a[href*='/jobs/view/']",
+    "a[href*='currentJobId=']",
+].join(",");
 
 // Модальные диалоги которые мешают кликать
 const MODAL_DISMISS_SELECTORS = [
@@ -108,9 +121,26 @@ function toPositiveInt(value: string | undefined, fallback: number): number {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function linkedInTimeFilter(preferences?: SearchPreferences): string {
+    const days = Number(preferences?.dateRangeDays);
+    if (!Number.isFinite(days) || days <= 0) return LINKEDIN_TIME_FILTER;
+    if (days <= 1) return "r86400";
+    if (days <= 7) return "r604800";
+    if (days <= 30) return "r2592000";
+    return LINKEDIN_TIME_FILTER;
+}
+
+// LinkedIn personalised "Top Applicant" collection — always scanned first
+// because it shows roles where the candidate profile is a strong match.
+// Requires an active LinkedIn session; skipped automatically if not logged in.
+const TOP_APPLICANT_URL = "https://www.linkedin.com/jobs/collections/top-applicant/";
+
 function linkedInSearchUrls(preferences?: SearchPreferences): string[] {
     const preferredRoles = preferences?.targetRoles?.filter(Boolean) ?? [];
     const preferredLocations = preferences?.targetLocations?.filter(Boolean) ?? [];
+    const timeFilter = linkedInTimeFilter(preferences);
+
+    let baseUrls: string[];
 
     if (preferredRoles.length > 0 || preferredLocations.length > 0) {
         const roles = preferredRoles.length ? preferredRoles : DEFAULT_SEARCH_KEYWORD_QUERIES;
@@ -125,42 +155,65 @@ function linkedInSearchUrls(preferences?: SearchPreferences): string[] {
                 if (/^\d+$/.test(location)) url.searchParams.set("geoId", location);
                 else url.searchParams.set("location", location);
                 url.searchParams.set("distance", DISTANCE);
-                url.searchParams.set("f_TPR", LINKEDIN_TIME_FILTER);
+                url.searchParams.set("f_TPR", timeFilter);
                 urls.push(url.toString());
-                if (urls.length >= maxUrls) return urls;
+                if (urls.length >= maxUrls) break;
             }
+            if (urls.length >= maxUrls) break;
         }
 
-        return urls;
+        baseUrls = urls;
+    } else {
+        const configured = process.env.LINKEDIN_SEARCH_URLS ?? process.env.LINKEDIN_SEARCH_URL;
+        if (configured) {
+            const urls = configured
+                .split(/[\n,]/)
+                .map((u) => u.trim())
+                .filter(Boolean)
+                .filter((u) => {
+                    try {
+                        const parsed = new URL(u);
+                        return parsed.searchParams.has("keywords") ||
+                            parsed.searchParams.has("geoId") ||
+                            parsed.pathname.includes("/collections/");
+                    } catch { return false; }
+                })
+                // Remove top-applicant from configured list — it's prepended below.
+                .filter((u) => !u.includes("/collections/top-applicant"));
+            if (urls.length > 0) {
+                baseUrls = urls;
+            } else {
+                console.warn("[LinkedIn] Ignoring LINKEDIN_SEARCH_URL(S): missing keywords/geoId params or /collections/ path");
+                baseUrls = DEFAULT_LINKEDIN_SEARCH_URLS;
+            }
+        } else if (process.env.LINKEDIN_USE_KEYWORD_QUERIES === "true") {
+            const location = encodeURIComponent(getSearchLocation());
+            baseUrls = DEFAULT_SEARCH_KEYWORD_QUERIES.map((query) => {
+                const keywords = encodeURIComponent(query);
+                return `https://www.linkedin.com/jobs/search/?keywords=${keywords}&location=${location}&f_TPR=${timeFilter}`;
+            });
+        } else {
+            baseUrls = DEFAULT_LINKEDIN_SEARCH_URLS;
+        }
     }
 
-    const configured = process.env.LINKEDIN_SEARCH_URLS ?? process.env.LINKEDIN_SEARCH_URL;
-    if (configured) {
-        const urls = configured
-            .split(/[\n,]/)
-            .map((u) => u.trim())
-            .filter(Boolean)
-            .filter((u) => {
-                try {
-                    const url = new URL(u);
-                    return url.searchParams.has("keywords") || url.searchParams.has("geoId");
-                } catch { return false; }
-            });
-        if (urls.length > 0) return urls;
-        console.warn("[LinkedIn] Ignoring LINKEDIN_SEARCH_URL(S): missing keywords/geoId params");
-    }
-    if (process.env.LINKEDIN_USE_KEYWORD_QUERIES === "true") {
-        const location = encodeURIComponent(getSearchLocation());
-        return DEFAULT_SEARCH_KEYWORD_QUERIES.map((query) => {
-            const keywords = encodeURIComponent(query);
-            return `https://www.linkedin.com/jobs/search/?keywords=${keywords}&location=${location}&f_TPR=${LINKEDIN_TIME_FILTER}`;
-        });
-    }
-    return DEFAULT_LINKEDIN_SEARCH_URLS;
+    // Always put top-applicant first — personalised recommendations are highest signal.
+    return [TOP_APPLICANT_URL, ...baseUrls];
+}
+
+function isCollectionUrl(searchUrl: string): boolean {
+    try { return new URL(searchUrl).pathname.includes("/collections/"); }
+    catch { return false; }
 }
 
 function withStartParam(searchUrl: string, start: number): string {
     const url = new URL(searchUrl);
+    if (isCollectionUrl(searchUrl)) {
+        // Collections don't use f_TPR (time filter) but DO support start= for pagination.
+        if (start > 0) url.searchParams.set("start", String(start));
+        else url.searchParams.delete("start");
+        return url.toString();
+    }
     if (!url.searchParams.has("f_TPR")) url.searchParams.set("f_TPR", LINKEDIN_TIME_FILTER);
     if (start > 0) url.searchParams.set("start", String(start));
     else url.searchParams.delete("start");
@@ -251,24 +304,49 @@ async function fetchLinkedInHtml(url: string): Promise<string> {
 
 // ─── EXTRACT JOB IDs SCRIPT ───────────────────────────────────────────────────
 //
-// Читаем job IDs напрямую из data-occludable-job-id на <li> элементах.
-// Никакого скролла, никакого viewport-фильтра — просто querySelectorAll.
+// Читаем job IDs из нескольких вариантов LinkedIn DOM.
+// LinkedIn часто меняет список между query/layout, поэтому data-occludable-job-id
+// недостаточно: дополнительно берём IDs из href/currentJobId/data-entity-urn.
 // Передаём как строку чтобы esbuild не добавил __name() → ReferenceError.
 
 const EXTRACT_JOB_IDS_SCRIPT = /* javascript */ `
 function extractJobIds(maxCards) {
-    var items = Array.from(
-        document.querySelectorAll("li.scaffold-layout__list-item[data-occludable-job-id]")
-    );
-
     var seen = new Set();
     var ids = [];
 
-    for (var i = 0; i < items.length && ids.length < maxCards; i++) {
-        var jobId = items[i].getAttribute("data-occludable-job-id");
+    function add(jobId) {
         if (jobId && !seen.has(jobId)) {
             seen.add(jobId);
             ids.push(jobId);
+        }
+    }
+
+    var items = Array.from(document.querySelectorAll([
+        "li.scaffold-layout__list-item",
+        "li[data-occludable-job-id]",
+        "[data-job-id]",
+        "[data-entity-urn*='urn:li:jobPosting:']",
+        "a[href*='/jobs/view/']",
+        "a[href*='currentJobId=']"
+    ].join(",")));
+
+    for (var i = 0; i < items.length && ids.length < maxCards; i++) {
+        var item = items[i];
+        add(item.getAttribute("data-occludable-job-id"));
+        add(item.getAttribute("data-job-id"));
+
+        var urn = item.getAttribute("data-entity-urn") || "";
+        var urnMatch = urn.match(/urn:li:jobPosting:(\\d+)/);
+        if (urnMatch) add(urnMatch[1]);
+
+        var links = item.matches("a") ? [item] : Array.from(item.querySelectorAll("a[href*='/jobs/view/'],a[href*='currentJobId=']"));
+        for (var j = 0; j < links.length && ids.length < maxCards; j++) {
+            var href = links[j].getAttribute("href") || "";
+            var viewMatch = href.match(/\\/jobs\\/view\\/(\\d+)/);
+            if (viewMatch) add(viewMatch[1]);
+
+            var currentMatch = href.match(/[?&]currentJobId=(\\d+)/);
+            if (currentMatch) add(currentMatch[1]);
         }
     }
 
@@ -505,43 +583,55 @@ export class LinkedInProvider implements JobProvider {
         }
     }
 
+    private async collectGuestJobCardsForSearchUrl(
+        baseSearchUrl: string,
+        existingJobIds: Set<string>,
+        seenJobIds: Set<string>,
+    ): Promise<LinkedInJobCard[]> {
+        const cards: LinkedInJobCard[] = [];
+
+        console.log(`[LinkedIn] Guest scanning: ${guestSearchUrl(baseSearchUrl, 0)}`);
+        for (let pageIndex = 0; pageIndex < LINKEDIN_MAX_PAGES; pageIndex++) {
+            const start = pageIndex * LINKEDIN_PAGE_SIZE;
+            const url = guestSearchUrl(baseSearchUrl, start);
+            const html = await fetchLinkedInHtml(url).catch((error) => {
+                console.error(`[LinkedIn] Guest search failed for ${url}:`, error);
+                return "";
+            });
+            const matches = Array.from(html.matchAll(/<div class="base-card[\s\S]*?data-entity-urn="urn:li:jobPosting:(\d+)"[\s\S]*?<\/li>/gi));
+            let newOnPage = 0;
+
+            for (const match of matches.slice(0, LINKEDIN_MAX_CARDS_PER_PAGE)) {
+                const jobId = match[1];
+                if (seenJobIds.has(jobId) || existingJobIds.has(jobId)) continue;
+
+                const cardHtml = match[0];
+                seenJobIds.add(jobId);
+                newOnPage++;
+                cards.push({
+                    title: textBetween(cardHtml, /base-search-card__title[^>]*>([\s\S]*?)<\/h3>/i) ?? "Unknown title",
+                    company: textBetween(cardHtml, /base-search-card__subtitle[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i),
+                    location: textBetween(cardHtml, /job-search-card__location[^>]*>([\s\S]*?)<\/span>/i),
+                    postedAt: /<time[^>]*datetime="([^"]+)"/i.exec(cardHtml)?.[1],
+                    url: normalizeLinkedInUrl(jobId),
+                    jobId,
+                    searchUrl: baseSearchUrl,
+                });
+            }
+
+            console.log(`[LinkedIn] guest start=${start}: found=${matches.length}, new=${newOnPage}, total=${cards.length}`);
+            if (newOnPage === 0) break;
+        }
+
+        return cards;
+    }
+
     private async collectGuestJobCards(existingJobIds: Set<string>): Promise<LinkedInJobCard[]> {
         const cards: LinkedInJobCard[] = [];
         const seenJobIds = new Set<string>();
 
         for (const baseSearchUrl of linkedInSearchUrls(this.options.preferences)) {
-            console.log(`[LinkedIn] Guest scanning: ${guestSearchUrl(baseSearchUrl, 0)}`);
-            for (let pageIndex = 0; pageIndex < LINKEDIN_MAX_PAGES; pageIndex++) {
-                const start = pageIndex * LINKEDIN_PAGE_SIZE;
-                const url = guestSearchUrl(baseSearchUrl, start);
-                const html = await fetchLinkedInHtml(url).catch((error) => {
-                    console.error(`[LinkedIn] Guest search failed for ${url}:`, error);
-                    return "";
-                });
-                const matches = Array.from(html.matchAll(/<div class="base-card[\s\S]*?data-entity-urn="urn:li:jobPosting:(\d+)"[\s\S]*?<\/li>/gi));
-                let newOnPage = 0;
-
-                for (const match of matches.slice(0, LINKEDIN_MAX_CARDS_PER_PAGE)) {
-                    const jobId = match[1];
-                    if (seenJobIds.has(jobId) || existingJobIds.has(jobId)) continue;
-
-                    const cardHtml = match[0];
-                    seenJobIds.add(jobId);
-                    newOnPage++;
-                    cards.push({
-                        title: textBetween(cardHtml, /base-search-card__title[^>]*>([\s\S]*?)<\/h3>/i) ?? "Unknown title",
-                        company: textBetween(cardHtml, /base-search-card__subtitle[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i),
-                        location: textBetween(cardHtml, /job-search-card__location[^>]*>([\s\S]*?)<\/span>/i),
-                        postedAt: /<time[^>]*datetime="([^"]+)"/i.exec(cardHtml)?.[1],
-                        url: normalizeLinkedInUrl(jobId),
-                        jobId,
-                        searchUrl: baseSearchUrl,
-                    });
-                }
-
-                console.log(`[LinkedIn] guest start=${start}: found=${matches.length}, new=${newOnPage}, total=${cards.length}`);
-                if (newOnPage === 0) break;
-            }
+            cards.push(...await this.collectGuestJobCardsForSearchUrl(baseSearchUrl, existingJobIds, seenJobIds));
         }
 
         return cards;
@@ -551,12 +641,51 @@ export class LinkedInProvider implements JobProvider {
 
     private async loadExistingJobIds(): Promise<Set<string>> {
         const existing = await prisma.job.findMany({
-            where: { source: "LINKEDIN", externalJobId: { not: null } },
+            where: {
+                externalJobId: { not: null },
+                OR: [
+                    { source: "LINKEDIN" },
+                    { source: "STORAGE_IMPORT", externalJobId: { not: null } },
+                ],
+            },
             select: { externalJobId: true },
         });
-        const ids = new Set(existing.map((j) => j.externalJobId).filter(Boolean) as string[]);
-        console.log(`[LinkedIn] Loaded ${ids.size} existing job IDs from DB`);
+        const ids = new Set(
+            existing
+                .map((j) => j.externalJobId)
+                .filter((id): id is string => typeof id === "string" && /^\d+$/.test(id)),
+        );
+        console.log(`[LinkedIn] Loaded ${ids.size} existing LinkedIn job IDs from DB`);
         return ids;
+    }
+
+    private async readSearchPageJobIds(page: Page, searchUrl: string, start: number): Promise<string[]> {
+        for (let attempt = 0; attempt <= LINKEDIN_EMPTY_PAGE_RETRIES; attempt++) {
+            await page
+                .waitForSelector(
+                    JOB_CARD_SELECTOR,
+                    { timeout: WAIT_FOR_LIST_TIMEOUT_MS },
+                )
+                .catch(() => null);
+
+            const jobIds = await evalExtractJobIds(page, LINKEDIN_MAX_CARDS_PER_PAGE);
+            if (jobIds.length > 0 || attempt >= LINKEDIN_EMPTY_PAGE_RETRIES) return jobIds;
+
+            console.warn(
+                `[LinkedIn] start=${start}: no cards after attempt ${attempt + 1}; retrying search page load...`,
+            );
+            await sleep(WAIT_AFTER_EMPTY_PAGE_MS);
+            await page.reload({ waitUntil: "domcontentloaded", timeout: LINKEDIN_SEARCH_TIMEOUT_MS }).catch(async () => {
+                await page.goto(searchUrl, {
+                    waitUntil: "domcontentloaded",
+                    timeout: LINKEDIN_SEARCH_TIMEOUT_MS,
+                });
+            });
+            await sleep(WAIT_AFTER_GOTO_MS);
+            await closeLinkedInModals(page);
+        }
+
+        return [];
     }
 
     // ── 2. Сбор jobId из списка (без скролла) ────────────────────────────────
@@ -586,28 +715,40 @@ export class LinkedInProvider implements JobProvider {
                     },
                 });
 
-                for (let pageIndex = 0; pageIndex < LINKEDIN_MAX_PAGES; pageIndex++) {
+                // Collections support start= pagination like regular search pages.
+                const maxPages = LINKEDIN_MAX_PAGES;
+                for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
                     const start = pageIndex * LINKEDIN_PAGE_SIZE;
                     const searchUrl = withStartParam(baseSearchUrl, start);
 
-                    await page.goto(searchUrl, {
-                        waitUntil: "domcontentloaded",
-                        timeout: 60_000,
-                    });
+                    try {
+                        await page.goto(searchUrl, {
+                            waitUntil: "domcontentloaded",
+                            timeout: LINKEDIN_SEARCH_TIMEOUT_MS,
+                        });
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        console.warn(`[LinkedIn] Search page failed at start=${start}; keeping ${cards.length} collected cards: ${message}`);
+                        updateAutomationProgress({
+                            stage: "Collecting",
+                            message: `LinkedIn: search page start=${start} failed; keeping ${cards.length} cards.`,
+                            currentTarget: `LinkedIn page start=${start}`,
+                            providerStatus: {
+                                source: "LINKEDIN",
+                                phase: "Scanning pages",
+                                searchUrl,
+                                pageStart: start,
+                                totalCards: cards.length,
+                            },
+                        });
+                        break;
+                    }
 
                     await sleep(WAIT_AFTER_GOTO_MS);
                     await closeLinkedInModals(page);
 
-                    // Ждём появления хотя бы одного <li data-occludable-job-id>
-                    await page
-                        .waitForSelector(
-                            "li.scaffold-layout__list-item[data-occludable-job-id]",
-                            { timeout: WAIT_FOR_LIST_TIMEOUT_MS },
-                        )
-                        .catch(() => null);
-
                     // Читаем job IDs прямо из data-атрибутов списка — никакого скролла
-                    const jobIds = await evalExtractJobIds(page, LINKEDIN_MAX_CARDS_PER_PAGE);
+                    const jobIds = await this.readSearchPageJobIds(page, searchUrl, start);
 
                     let newOnPage = 0;
 
@@ -651,6 +792,17 @@ export class LinkedInProvider implements JobProvider {
                         },
                     });
 
+                    if (jobIds.length === 0 && start === 0) {
+                        console.warn(`[LinkedIn] Browser search returned 0 cards for this query; trying guest fallback.`);
+                        const guestCards = await this.collectGuestJobCardsForSearchUrl(baseSearchUrl, existingJobIds, seenJobIds);
+                        if (guestCards.length > 0) {
+                            cards.push(...guestCards);
+                            console.log(`[LinkedIn] Guest fallback added ${guestCards.length} cards, total=${cards.length}`);
+                            emptyPages = 0;
+                            break;
+                        }
+                    }
+
                     if (newOnPage === 0) {
                         emptyPages++;
                         if (emptyPages >= LINKEDIN_EMPTY_PAGE_STOP) {
@@ -687,6 +839,7 @@ export class LinkedInProvider implements JobProvider {
                 company: card.company,
                 location: card.location,
                 url: card.url,
+                externalJobId: card.jobId,
                 postedAt: card.postedAt ? new Date(card.postedAt) : undefined,
                 source: "LINKEDIN",
                 description: cardDescription(card),
@@ -797,6 +950,7 @@ export class LinkedInProvider implements JobProvider {
                         company,
                         location: card.location,
                         url: card.url,
+                        externalJobId: card.jobId,
                         postedAt,
                         source: "LINKEDIN",
                         // Ограничиваем длину описания — 5000 символов достаточно для анализа
@@ -810,6 +964,7 @@ export class LinkedInProvider implements JobProvider {
                         company: card.company,
                         location: card.location,
                         url: card.url,
+                        externalJobId: card.jobId,
                         postedAt: card.postedAt ? new Date(card.postedAt) : undefined,
                         source: "LINKEDIN",
                         description: fallbackDescription(card),
@@ -840,6 +995,7 @@ export class LinkedInProvider implements JobProvider {
             company: textBetween(html, /topcard__org-name-link[^>]*>([\s\S]*?)<\/a>/i) ?? card.company,
             location: textBetween(html, /topcard__flavor topcard__flavor--bullet[^>]*>([\s\S]*?)<\/span>/i) ?? card.location,
             url: card.url,
+            externalJobId: card.jobId,
             postedAt: card.postedAt ? new Date(card.postedAt) : undefined,
             source: "LINKEDIN",
             description: description.slice(0, 5_000),

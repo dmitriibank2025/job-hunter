@@ -54,7 +54,7 @@ function glassdoorSearchUrls(): string[] {
 
     if (!configured) return DEFAULT_GLASSDOOR_SEARCH_URLS;
 
-    return configured.split(/[\n,]/).map((u) => u.trim()).filter(Boolean);
+    return configured.split(/[\n;]/).map((u) => u.trim()).filter(Boolean);
 }
 
 function sleep(ms: number): Promise<void> {

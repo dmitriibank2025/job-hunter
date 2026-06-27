@@ -2,22 +2,22 @@ import { Router } from "express";
 import {
     analyzeAllMissingJobs,
     analyzeOneJob,
-    collectUserJobs,
     createDailyReport,
-    createJob,
     createManualVacancy,
     extractManualVacancy,
     generateApplicationPackage,
     generateCoverLetter,
     generateResume,
+    getRejectionsResumeReport,
     getAutomationStatus,
     getStatistics,
     getTopJobs,
     listCenterIsraelCompanies,
     listJobs,
-    listStaticCenterIsraelCompanies,
+    refinePromptRules,
     repairUserMatches,
     runAutomation,
+    sendTelegramNotification,
     submitCompanyApplication,
     updateUserMatch,
 } from "../controllers/jobs.controller";
@@ -25,19 +25,19 @@ import {
 export function createJobsRouter() {
     const router = Router();
 
-    router.post("/", createJob);
     router.post("/manual/extract", extractManualVacancy);
     router.post("/manual", createManualVacancy);
-    router.post("/collect", collectUserJobs);
     router.post("/daily-report", createDailyReport);
+    router.post("/notifications/telegram", sendTelegramNotification);
     router.post("/automation/run", runAutomation);
     router.get("/automation/status", getAutomationStatus);
     router.get("/center-israel/companies", listCenterIsraelCompanies);
-    router.get("/center-israel/static-companies", listStaticCenterIsraelCompanies);
     router.post("/analyze-all", analyzeAllMissingJobs);
     router.post("/user-matches/repair", repairUserMatches);
     router.get("/top", getTopJobs);
     router.get("/statistics", getStatistics);
+    router.get("/rejections/resume-report", getRejectionsResumeReport);
+    router.post("/rejections/refine", refinePromptRules);
     router.get("/", listJobs);
     router.post("/:id/analyze", analyzeOneJob);
     router.put("/:id/user-match", updateUserMatch);

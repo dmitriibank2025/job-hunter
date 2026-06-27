@@ -16,6 +16,7 @@ export type ParsedJob = {
     company?: string;
     location?: string;
     url?: string;
+    externalJobId?: string;
     postedAt?: Date;
     source: JobSource;
     description: string;

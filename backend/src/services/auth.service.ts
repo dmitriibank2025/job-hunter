@@ -163,13 +163,25 @@ export async function refreshAuthTokens(refreshToken: string) {
     });
 
     if (!storedToken || storedToken.revokedAt || storedToken.expiresAt <= new Date()) {
-        throw new HttpError(401, "Invalid refresh token.");
+        throw new HttpError(401, "Invalid or expired refresh token.");
     }
 
+    // Rotate: revoke the used token and issue a new pair.
     await prisma.authRefreshToken.update({
         where: { id: storedToken.id },
         data: { revokedAt: new Date() },
     });
+
+    // Opportunistic cleanup — delete expired/revoked tokens for this user (non-blocking).
+    prisma.authRefreshToken.deleteMany({
+        where: {
+            userId: storedToken.userId,
+            OR: [
+                { expiresAt: { lt: new Date() } },
+                { revokedAt: { not: null } },
+            ],
+        },
+    }).catch(() => undefined);
 
     return {
         user: publicUser(storedToken.user),

@@ -1,9 +1,16 @@
+import { prisma } from "../infrastructure/prisma";
+
 type GmailConfig = {
     clientId: string;
     clientSecret: string;
     refreshToken: string;
     userId: string;
+    appUserId?: string;
 };
+
+const GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+];
 
 type GmailListResponse = {
     messages?: Array<{
@@ -50,26 +57,184 @@ export type ParsedGmailMessage = {
     raw: GmailMessage;
 };
 
-function getGmailConfig(): GmailConfig | null {
+function gmailRedirectUri(): string {
+    return process.env.GMAIL_REDIRECT_URI ?? "http://localhost:4000/email/gmail/callback";
+}
+
+function getGmailClientEnv() {
     const clientId = process.env.GMAIL_CLIENT_ID;
     const clientSecret = process.env.GMAIL_CLIENT_SECRET;
-    const refreshToken = process.env.GMAIL_REFRESH_TOKEN;
-    const userId = process.env.GMAIL_USER_ID ?? "me";
 
-    if (!clientId || !clientSecret || !refreshToken) {
+    if (!clientId || !clientSecret) {
         return null;
     }
 
     return {
         clientId,
         clientSecret,
-        refreshToken,
-        userId,
     };
 }
 
-export function isGmailConfigured(): boolean {
-    return getGmailConfig() !== null;
+async function getGmailConfig(userId?: string): Promise<GmailConfig | null> {
+    const client = getGmailClientEnv();
+    if (!client) return null;
+
+    if (userId) {
+        const account = await prisma.userGmailAccount.findUnique({
+            where: { userId },
+        });
+
+        if (account?.isActive && account.refreshToken) {
+            return {
+                ...client,
+                refreshToken: account.refreshToken,
+                userId: account.googleUserId || "me",
+                appUserId: userId,
+            };
+        }
+    }
+
+    const refreshToken = process.env.GMAIL_REFRESH_TOKEN;
+    if (!refreshToken) return null;
+
+    return {
+        ...client,
+        refreshToken,
+        userId: process.env.GMAIL_USER_ID ?? "me",
+    };
+}
+
+export async function isGmailConfigured(userId?: string): Promise<boolean> {
+    return getGmailConfig(userId) !== null;
+}
+
+export function buildGmailAuthUrl(userId: string): string {
+    const client = getGmailClientEnv();
+    if (!client) {
+        throw new Error("GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET are required.");
+    }
+
+    const state = Buffer.from(JSON.stringify({ userId }), "utf8").toString("base64url");
+    const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+
+    url.searchParams.set("client_id", client.clientId);
+    url.searchParams.set("redirect_uri", gmailRedirectUri());
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", GMAIL_SCOPES.join(" "));
+    url.searchParams.set("access_type", "offline");
+    url.searchParams.set("prompt", "consent");
+    url.searchParams.set("state", state);
+
+    return url.toString();
+}
+
+function userIdFromOAuthState(state?: string | null): string {
+    if (!state) throw new Error("Missing OAuth state.");
+
+    try {
+        const decoded = JSON.parse(Buffer.from(state, "base64url").toString("utf8")) as { userId?: string };
+        if (!decoded.userId) throw new Error("Missing userId in OAuth state.");
+        return decoded.userId;
+    } catch {
+        throw new Error("Invalid OAuth state.");
+    }
+}
+
+async function fetchGmailProfile(accessToken: string, googleUserId = "me"): Promise<{ emailAddress?: string }> {
+    return gmailFetch<{ emailAddress?: string }>(
+        `/users/${encodeURIComponent(googleUserId)}/profile`,
+        accessToken,
+    );
+}
+
+export async function connectGmailFromOAuthCallback(input: {
+    code: string;
+    state?: string | null;
+}) {
+    const client = getGmailClientEnv();
+    if (!client) {
+        throw new Error("GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET are required.");
+    }
+
+    const userId = userIdFromOAuthState(input.state);
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+            client_id: client.clientId,
+            client_secret: client.clientSecret,
+            code: input.code,
+            redirect_uri: gmailRedirectUri(),
+            grant_type: "authorization_code",
+        }),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(`Gmail OAuth code exchange failed: ${response.status} ${errorText}`);
+    }
+
+    const data = (await response.json()) as {
+        refresh_token?: string;
+        access_token?: string;
+        scope?: string;
+    };
+
+    if (!data.refresh_token) {
+        throw new Error("Google did not return a refresh token. Reconnect Gmail and approve offline access.");
+    }
+
+    const profile: { emailAddress?: string } = data.access_token
+        ? await fetchGmailProfile(data.access_token).catch(() => ({}))
+        : {};
+    const scopes = data.scope?.split(/\s+/).filter(Boolean) ?? GMAIL_SCOPES;
+
+    return prisma.userGmailAccount.upsert({
+        where: { userId },
+        create: {
+            userId,
+            email: profile.emailAddress,
+            googleUserId: "me",
+            refreshToken: data.refresh_token,
+            scopes,
+            connectedAt: new Date(),
+            isActive: true,
+            lastError: null,
+        },
+        update: {
+            email: profile.emailAddress,
+            googleUserId: "me",
+            refreshToken: data.refresh_token,
+            scopes,
+            connectedAt: new Date(),
+            isActive: true,
+            lastError: null,
+        },
+    });
+}
+
+export async function getGmailConnectionStatus(userId: string) {
+    const account = await prisma.userGmailAccount.findUnique({
+        where: { userId },
+        select: {
+            email: true,
+            googleUserId: true,
+            scopes: true,
+            connectedAt: true,
+            lastUsedAt: true,
+            lastError: true,
+            isActive: true,
+        },
+    });
+
+    return {
+        configured: Boolean(getGmailClientEnv()),
+        connected: Boolean(account?.isActive),
+        account,
+        envFallbackConfigured: Boolean(process.env.GMAIL_REFRESH_TOKEN && getGmailClientEnv()),
+    };
 }
 
 async function getAccessToken(config: GmailConfig): Promise<string> {
@@ -88,6 +253,12 @@ async function getAccessToken(config: GmailConfig): Promise<string> {
 
     if (!response.ok) {
         const errorText = await response.text().catch(() => "");
+        if (config.appUserId) {
+            await prisma.userGmailAccount.update({
+                where: { userId: config.appUserId },
+                data: { lastError: `Gmail token refresh failed: ${response.status} ${errorText}`.slice(0, 1_000) },
+            }).catch(() => undefined);
+        }
         throw new Error(`Gmail token refresh failed: ${response.status} ${errorText}`);
     }
 
@@ -160,13 +331,23 @@ function parseGmailMessage(message: GmailMessage): ParsedGmailMessage {
 }
 
 export async function searchGmailMessages(query: string, maxResults = 25): Promise<ParsedGmailMessage[]> {
-    const config = getGmailConfig();
+    return searchGmailMessagesForUser(undefined, query, maxResults);
+}
+
+export async function searchGmailMessagesForUser(userId: string | undefined, query: string, maxResults = 25): Promise<ParsedGmailMessage[]> {
+    const config = await getGmailConfig(userId);
 
     if (!config) {
         return [];
     }
 
     const accessToken = await getAccessToken(config);
+    if (config.appUserId) {
+        await prisma.userGmailAccount.update({
+            where: { userId: config.appUserId },
+            data: { lastUsedAt: new Date(), lastError: null },
+        }).catch(() => undefined);
+    }
     const searchParams = new URLSearchParams({
         q: query,
         maxResults: String(Math.min(Math.max(maxResults, 1), 100)),

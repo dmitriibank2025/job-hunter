@@ -7,13 +7,14 @@ import {
 } from "@prisma/client";
 import fs from "fs/promises";
 import path from "path";
-import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
 import { hashPassword, verifyPassword } from "./password.service";
 import { prisma } from "../infrastructure/prisma";
 import { getStorageRoot } from "./file-storage.service";
 import { linkedInStorageStatePathForUser, validateLinkedInStorageStatePath } from "./linkedin-account.service";
 import { BasicResumePdfTemplate, createBasicResumePdf } from "./resume-pdf.service";
+import { convertDocxToPdf, createStyledResumeDocx } from "./docx.service";
+import { invalidateMasterSkillsCache } from "./job-analyzer.service";
 
 export type PlanLimit = {
     vacanciesPerDay: number;
@@ -42,7 +43,7 @@ export const PLAN_LIMITS: Record<SubscriptionPlan, PlanLimit> = {
         generatedResumesPerMonth: 100_000,
         baseResumes: 10,
         searchRunsPerDay: 300_000,
-        tokenBudgetPerMonth: 3_000_000,
+        tokenBudgetPerMonth: 40_000_000,
         resumeAdvice: "full",
         statistics: "full",
         priorityCompanyInsights: true,
@@ -220,6 +221,7 @@ export type WorkspaceCandidateProfile = {
     location?: string | null;
     languages?: string[];
     resume: string;
+    resumeSourceFilePath?: string | null;
 };
 
 type ProfileInput = {
@@ -405,6 +407,7 @@ export async function saveUploadedResume(
     if (ext === ".txt" || ext === ".md") {
         textContent = buffer.toString("utf-8");
     } else if (ext === ".pdf") {
+        const { PDFParse } = await import("pdf-parse");
         const parser = new PDFParse({ data: buffer });
         try {
             const data = await parser.getText();
@@ -443,6 +446,7 @@ export async function saveUploadedResume(
             target: "FULLSTACK",
             targetTitle: "Uploaded Resume",
             content: textContent,
+            sourceFilePath: relativePath,
             isDefault: true,
         },
     });
@@ -657,14 +661,41 @@ export async function updateUserDailyAutomationSettings(userId: string, input: {
     enabled: boolean;
     time: string;
     timezone: string;
+    resumeBaseIds?: {
+        FULLSTACK?: string;
+        BACKEND?: string;
+        FRONTEND?: string;
+    };
 }) {
+    const requestedIds = [
+        input.resumeBaseIds?.FULLSTACK,
+        input.resumeBaseIds?.BACKEND,
+        input.resumeBaseIds?.FRONTEND,
+    ].filter((id): id is string => Boolean(id));
+
+    if (requestedIds.length) {
+        const ownedCount = await prisma.userResumeBase.count({
+            where: {
+                userId,
+                id: { in: requestedIds },
+            },
+        });
+
+        if (ownedCount !== new Set(requestedIds).size) {
+            throw new Error("One or more selected daily automation resume bases do not belong to this user.");
+        }
+    }
+
     return prisma.appUser.update({
         where: { id: userId },
         data: {
             dailyAutomationEnabled: input.enabled,
             dailyAutomationTime: input.time,
             dailyAutomationTimezone: input.timezone,
-            dailyAutomationLastRunKey: input.enabled ? undefined : null,
+            dailyAutomationLastRunKey: null,
+            dailyAutomationFullstackResumeBaseId: input.resumeBaseIds?.FULLSTACK ?? null,
+            dailyAutomationBackendResumeBaseId: input.resumeBaseIds?.BACKEND ?? null,
+            dailyAutomationFrontendResumeBaseId: input.resumeBaseIds?.FRONTEND ?? null,
         },
     });
 }
@@ -772,12 +803,15 @@ export async function updateUserResumeBase(userId: string, resumeBaseId: string,
             content: input.content,
             isDefault: input.isDefault,
         },
-    }).then(async (resumeBase) => ({
-        ...resumeBase,
-        pdfFilePath: input.content || input.template
-            ? await createResumeBasePdf(userId, resumeBase.id, input.content ?? resumeBase.content, input.template)
-            : resumeBasePdfPath(userId, resumeBase.id),
-    }));
+    }).then(async (resumeBase) => {
+        invalidateMasterSkillsCache(userId);
+        return {
+            ...resumeBase,
+            pdfFilePath: input.content || input.template
+                ? await createResumeBasePdf(userId, resumeBase.id, input.content ?? resumeBase.content, input.template)
+                : resumeBasePdfPath(userId, resumeBase.id),
+        };
+    });
 }
 
 export async function deleteUserResumeBase(userId: string, resumeBaseId: string) {
@@ -788,6 +822,7 @@ export async function deleteUserResumeBase(userId: string, resumeBaseId: string)
     await prisma.userResumeBase.delete({
         where: { id: resumeBaseId },
     });
+    invalidateMasterSkillsCache(userId);
 }
 
 export async function recordUsageEvent(userId: string, type: UsageEventType, amount = 1, metadata?: unknown) {
@@ -911,6 +946,7 @@ export async function getWorkspaceCandidateProfile(userId: string, resumeBaseId?
     }
 
     const resume = user.resumeBases[0]?.content;
+    const resumeSourceFilePath = user.resumeBases[0]?.sourceFilePath;
     if (!resume) {
         throw new Error(resumeBaseId
             ? "Selected base resume was not found for this user."
@@ -926,6 +962,7 @@ export async function getWorkspaceCandidateProfile(userId: string, resumeBaseId?
         location: user.profile.location,
         languages: user.profile.languages,
         resume,
+        resumeSourceFilePath,
     };
 }
 
@@ -1073,8 +1110,17 @@ async function resumeBasePdfPathIfExists(userId: string, resumeBaseId: string) {
     }
 }
 
-async function createResumeBasePdf(userId: string, resumeBaseId: string, content: string, template: BasicResumePdfTemplate = "ATS") {
+async function createResumeBasePdf(userId: string, resumeBaseId: string, content: string, _template: BasicResumePdfTemplate = "ATS") {
     const pdfPath = resumeBasePdfPath(userId, resumeBaseId);
-    await createBasicResumePdf(content, pdfPath, template);
+    // Create a styled DOCX first, then convert to PDF via LibreOffice so the PDF
+    // reflects the visual styling instead of being a plain programmatic render.
+    const docxPath = pdfPath.replace(/\.pdf$/, ".docx");
+    try {
+        await createStyledResumeDocx(content, docxPath);
+        await convertDocxToPdf({ docxPath, outputPath: pdfPath });
+    } catch {
+        // LibreOffice not available (e.g. local dev without soffice) → fallback to basic PDF.
+        await createBasicResumePdf(content, pdfPath, _template);
+    }
     return pdfPath;
 }

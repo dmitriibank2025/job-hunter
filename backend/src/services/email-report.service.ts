@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../infrastructure/prisma";
-import { isGmailConfigured, ParsedGmailMessage, searchGmailMessages } from "./gmail-api.service";
+import { isGmailConfigured, ParsedGmailMessage, searchGmailMessagesForUser } from "./gmail-api.service";
 import { syncAppliedVacancyHistory } from "./applied-vacancy.service";
 
 const EMAIL_EVENT_TYPES = [
@@ -32,7 +32,7 @@ const DEFAULT_JOB_ALERT_QUERY =
     '(from:noreply@glassdoor.com OR from:jobs-noreply@linkedin.com OR from:jobsearch@linkedin.com OR subject:jobs OR subject:hiring OR subject:"job alert") -in:spam -in:trash';
 
 const DEFAULT_APPLICATION_QUERY =
-    '("your application" OR "thanks for applying" OR "application received" OR "we received your application" OR "application was viewed" OR "not moving forward" OR unfortunately OR rejected OR interview OR recruiter OR InMail OR "just messaged you" OR "action needed") -in:spam -in:trash';
+    '("your application" OR "thanks for applying" OR "thank you for applying" OR "thank you for your application" OR "application received" OR "we received your application" OR "application was viewed" OR "not moving forward" OR unfortunately OR rejected OR interview OR recruiter OR InMail OR "just messaged you" OR "action needed") -in:spam -in:trash';
 
 function lookbackQuery(baseQuery: string): string {
     const newerThan = process.env.EMAIL_REPORT_NEWER_THAN ?? "7d";
@@ -50,6 +50,88 @@ function normalizeText(value: string): string {
     return value.toLowerCase();
 }
 
+function isApplicationAcknowledgement(text: string): boolean {
+    return (
+        text.includes("thanks for applying") ||
+        text.includes("thank you for applying") ||
+        text.includes("thank you for your application") ||
+        text.includes("thanks for your application") ||
+        text.includes("we received your application") ||
+        text.includes("we have received your application") ||
+        text.includes("application was sent") ||
+        text.includes("application has been received") ||
+        text.includes("application received") ||
+        text.includes("we got it")
+    );
+}
+
+function isRejection(text: string): boolean {
+    // Explicit negative signals
+    if (
+        text.includes("not moving forward") ||
+        text.includes("not a fit") ||
+        text.includes("not the right fit") ||
+        text.includes("not a match") ||
+        text.includes("not proceeding") ||
+        text.includes("decided not to") ||
+        text.includes("not able to offer") ||
+        text.includes("no longer open") ||
+        text.includes("position has been filled") ||
+        text.includes("position is no longer available") ||
+        text.includes("we have filled") ||
+        text.includes("role has been filled") ||
+        text.includes("keep your resume on file") ||
+        text.includes("keep your cv on file") ||
+        text.includes("keep you in mind for future") ||
+        text.includes("not selected") ||
+        text.includes("not been selected") ||
+        text.includes("not shortlisted") ||
+        text.includes("rejected") ||
+        text.includes("unsuccessful") ||
+        text.includes("regret to inform") ||
+        text.includes("we regret") ||
+        text.includes("unfortunately")
+    ) return true;
+
+    // "other candidates" only counts as rejection when paired with advancement language
+    if (
+        /\bother candidates?\b.{0,120}\b(move forward|moving forward|proceed|progress|advance)\b/.test(text) ||
+        /\b(move forward|moving forward|proceed)\b.{0,120}\bother candidates?\b/.test(text) ||
+        text.includes("decided to move forward with other") ||
+        text.includes("pursuing other candidates") ||
+        text.includes("chose to move forward with other")
+    ) return true;
+
+    // "after careful consideration" almost always precedes a rejection
+    if (
+        /after careful consideration.{0,200}(not|unable|decided|regret)/i.test(text) ||
+        /thank you for your (?:time|interest|application).{0,200}(not|unable|unfortunately|regret)/i.test(text)
+    ) return true;
+
+    return false;
+}
+
+function isPositiveResponse(text: string): boolean {
+    if (
+        text.includes("phone screen") ||
+        text.includes("shortlisted") ||
+        /\bcongrats\b|\bcongratulations\b/.test(text) ||
+        /\bselected\s+for\s+(?:an?\s+|the\s+)?interview\b/.test(text) ||
+        /\binvit(?:e|ed|ation)\b.{0,80}\b(interview|call|conversation|meeting)\b/.test(text) ||
+        /\bschedule\b.{0,80}\b(interview|call|conversation|meeting)\b/.test(text) ||
+        /\bwould like to\b.{0,80}\b(speak|talk|meet|interview)\b/.test(text) ||
+        /\bnext steps?\b.{0,80}\b(interview|call|conversation|meeting|process)\b/.test(text)
+    ) return true;
+
+    // "interview" is strong signal but guard against "we are not proceeding to interview"
+    if (/\binterview\b/.test(text) && !isRejection(text)) return true;
+
+    // "move forward" without rejection context
+    if (/\b(move forward|moving forward)\b/.test(text) && !isRejection(text)) return true;
+
+    return false;
+}
+
 function classifyEmail(message: ParsedGmailMessage): EmailEventType {
     const text = normalizeText([
         message.subject,
@@ -58,24 +140,16 @@ function classifyEmail(message: ParsedGmailMessage): EmailEventType {
         message.bodyText ?? "",
     ].join("\n"));
 
-    if (
-        text.includes("not moving forward") ||
-        text.includes("unfortunately") ||
-        text.includes("other candidates") ||
-        text.includes("not able to offer") ||
-        text.includes("no longer open") ||
-        text.includes("rejected")
-    ) {
+    // Rejection must be checked before positive — many rejections use polite positive-sounding phrases
+    if (isRejection(text)) {
         return "REJECTION";
     }
 
-    if (
-        text.includes("selected") ||
-        text.includes("congrats") ||
-        text.includes("interview") ||
-        text.includes("phone screen") ||
-        text.includes("next steps")
-    ) {
+    if (isApplicationAcknowledgement(text)) {
+        return "APPLICATION_RECEIVED";
+    }
+
+    if (isPositiveResponse(text)) {
         return "POSITIVE_RESPONSE";
     }
 
@@ -101,16 +175,6 @@ function classifyEmail(message: ParsedGmailMessage): EmailEventType {
         text.includes("viewed your application")
     ) {
         return "APPLICATION_VIEWED";
-    }
-
-    if (
-        text.includes("thanks for applying") ||
-        text.includes("we received your application") ||
-        text.includes("application was sent") ||
-        text.includes("application received") ||
-        text.includes("we got it")
-    ) {
-        return "APPLICATION_RECEIVED";
     }
 
     if (
@@ -229,7 +293,7 @@ async function syncEmailEvents(userId: string): Promise<{
     let newEventsCount = 0;
 
     for (const query of queries) {
-        const messages = await searchGmailMessages(lookbackQuery(query), safeLimit);
+        const messages = await searchGmailMessagesForUser(userId, lookbackQuery(query), safeLimit);
 
         for (const message of messages) {
             if (seen.has(message.id)) continue;
@@ -316,12 +380,12 @@ export function buildEmailReportSection(events: EmailEvent[]): string {
 
 export async function runEmailReport(userId: string): Promise<EmailReport> {
     const enabled = process.env.EMAIL_REPORT_ENABLED !== "false";
-    const configured = isGmailConfigured();
+    const configured = await isGmailConfigured(userId);
 
     if (!enabled || !configured) {
         const reason = !enabled
             ? "Email report disabled."
-            : "Email report skipped: Gmail OAuth env vars are missing.";
+            : "Email report skipped: Gmail OAuth is not connected.";
 
         return {
             enabled,
@@ -335,7 +399,18 @@ export async function runEmailReport(userId: string): Promise<EmailReport> {
         };
     }
 
-    const syncResult = await syncEmailEvents(userId);
+    let syncResult = { syncedCount: 0, newEventsCount: 0 };
+    let syncErrorMessage: string | undefined;
+
+    try {
+        syncResult = await syncEmailEvents(userId);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        syncErrorMessage = /invalid_grant|expired|revoked/i.test(message)
+            ? "Gmail sync skipped: refresh token expired or was revoked. Reconnect Gmail OAuth to resume live sync."
+            : `Gmail sync skipped: ${message}`;
+    }
+
     const appliedHistory = await syncAppliedVacancyHistory(userId);
     const events = await prisma.emailEvent.findMany({
         where: {
@@ -361,6 +436,8 @@ export async function runEmailReport(userId: string): Promise<EmailReport> {
         appliedHistoryFromEmails: appliedHistory.fromEmails,
         appliedHistoryFromLocalApplications: appliedHistory.fromLocalApplications,
         events,
-        message: buildEmailReportSection(events),
+        message: syncErrorMessage
+            ? `${syncErrorMessage}\n\n${buildEmailReportSection(events)}`
+            : buildEmailReportSection(events),
     };
 }

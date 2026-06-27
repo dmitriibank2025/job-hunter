@@ -8,7 +8,10 @@ import { ensureDir, getStorageRoot } from "./file-storage.service";
 const LINKEDIN_LOGIN_URL = "https://www.linkedin.com/login";
 const LINKEDIN_AUTH_TIMEOUT_MS = Number(process.env.LINKEDIN_AUTH_TIMEOUT_MS ?? 300_000);
 const LINKEDIN_HEADLESS_CONNECT = process.env.LINKEDIN_CONNECT_HEADLESS !== "false";
-const LINKEDIN_CONNECT_BROWSER_CHANNEL = process.env.LINKEDIN_CONNECT_BROWSER_CHANNEL || "chrome";
+// Empty string means "use bundled Chromium without a named channel".
+// The fallback to "chrome" only applies when the variable is completely absent.
+const _rawChannel = process.env.LINKEDIN_CONNECT_BROWSER_CHANNEL;
+const LINKEDIN_CONNECT_BROWSER_CHANNEL = _rawChannel !== undefined && _rawChannel !== "" ? _rawChannel : undefined;
 const PENDING_CONNECTION_TTL_MS = Number(process.env.LINKEDIN_PENDING_CONNECTION_TTL_MS ?? 15 * 60_000);
 const STORAGE_STATE_PATTERN = /^storage\/linkedin\/[a-zA-Z0-9_-]+\.json$/;
 
@@ -109,7 +112,7 @@ async function createLinkedInLoginContext(userId: string): Promise<BrowserContex
 
     const launchOptions = {
         headless: LINKEDIN_HEADLESS_CONNECT,
-        channel: LINKEDIN_CONNECT_BROWSER_CHANNEL || undefined,
+        channel: LINKEDIN_CONNECT_BROWSER_CHANNEL,
         viewport: { width: 1440, height: 1100 },
         userAgent:
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +

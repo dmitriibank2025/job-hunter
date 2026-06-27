@@ -126,6 +126,7 @@ export class GreenhouseProvider implements JobProvider {
                         company: boardToken,
                         location: job.location?.name,
                         url: job.absolute_url,
+                        externalJobId: String(job.id),
                         postedAt: job.updated_at ? new Date(job.updated_at) : undefined,
                         source: "GREENHOUSE",
                         // Если описание пустое — не теряем вакансию, fallback на title

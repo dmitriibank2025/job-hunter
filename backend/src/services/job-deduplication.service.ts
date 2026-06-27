@@ -4,7 +4,7 @@ import { ParsedJob } from "../providers/types";
 
 type JobInput = Pick<
     ParsedJob,
-    "title" | "company" | "location" | "url" | "postedAt" | "description"
+    "title" | "externalJobId" | "company" | "location" | "url" | "postedAt" | "description"
 > & {
     source?: string;
 };
@@ -32,6 +32,63 @@ export function normalizeJobUrl(url?: string | null): string | null {
     }
 }
 
+function cleanExternalJobId(value?: string | null): string | null {
+    const cleaned = value?.trim();
+    return cleaned || null;
+}
+
+export function inferExternalJobId(url?: string | null, source?: string | null): string | null {
+    if (!url) return null;
+
+    try {
+        const parsed = new URL(url);
+        const params = [
+            "currentJobId",
+            "jobId",
+            "jobsId",
+            "gh_jid",
+            "gh_src",
+            "jl",
+            "jk",
+            "reqId",
+            "requisitionId",
+            "requisition",
+        ];
+
+        for (const param of params) {
+            const value = cleanExternalJobId(parsed.searchParams.get(param));
+            if (value) return value;
+        }
+
+        const path = parsed.pathname;
+        const linkedInMatch = /\/jobs\/view\/(?:[^/]*-)?(\d{6,})\/?$/i.exec(path)
+            ?? /-(\d{6,})\/?$/i.exec(path);
+        if ((source === "LINKEDIN" || /linkedin\./i.test(parsed.hostname)) && linkedInMatch?.[1]) {
+            return linkedInMatch[1];
+        }
+
+        const greenhouseMatch = /\/jobs\/(\d{4,})\/?$/i.exec(path);
+        if ((source === "GREENHOUSE" || /greenhouse\.io/i.test(parsed.hostname)) && greenhouseMatch?.[1]) {
+            return greenhouseMatch[1];
+        }
+
+        const uuidMatch = /\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(path);
+        if (uuidMatch?.[1]) return uuidMatch[1];
+
+        const numericPathMatch = /(?:job|jobs|position|opening|requisition|req)[^0-9]{0,12}(\d{5,})/i.exec(path)
+            ?? /\/(\d{7,})\/?$/i.exec(path);
+        return numericPathMatch?.[1] ?? null;
+    } catch {
+        const linkedInMatch = /linkedin\.[^\s/]+\/jobs\/view\/(?:[^/\s]*-)?(\d{6,})/i.exec(url)
+            ?? /currentJobId=(\d{6,})/i.exec(url);
+        return linkedInMatch?.[1] ?? null;
+    }
+}
+
+function resolveExternalJobId(job: JobInput): string | null {
+    return cleanExternalJobId(job.externalJobId) ?? inferExternalJobId(job.url, job.source);
+}
+
 function normalizePostedAt(value?: Date | string | null): string {
     if (!value) return "";
 
@@ -56,6 +113,7 @@ export function buildJobFingerprint(job: Pick<JobInput, "title" | "company" | "p
 
 export function buildJobCreateData(job: JobInput) {
     return {
+        externalJobId: resolveExternalJobId(job),
         title: job.title,
         company: job.company,
         location: job.location,
@@ -71,10 +129,12 @@ export function buildJobCreateData(job: JobInput) {
 export async function findDuplicateJob(job: JobInput): Promise<Job | null> {
     const normalizedUrl = normalizeJobUrl(job.url);
     const fingerprint = buildJobFingerprint(job);
+    const externalJobId = resolveExternalJobId(job);
 
     return prisma.job.findFirst({
         where: {
             OR: [
+                ...(externalJobId && job.source ? [{ source: job.source, externalJobId }] : []),
                 ...(normalizedUrl ? [{ normalizedUrl }, { url: job.url }] : []),
                 ...(fingerprint ? [{ fingerprint }] : []),
             ],
@@ -93,10 +153,14 @@ export async function findDuplicateJobsBatch(jobs: JobInput[]): Promise<Map<stri
     const fingerprints = jobs
         .map(j => buildJobFingerprint(j))
         .filter((fp): fp is string => fp !== null);
+    const sourceExternalIds = jobs
+        .map(j => ({ source: j.source, externalJobId: resolveExternalJobId(j) }))
+        .filter((item): item is { source: string; externalJobId: string } => Boolean(item.source && item.externalJobId));
 
     const duplicates = await prisma.job.findMany({
         where: {
             OR: [
+                ...sourceExternalIds.map(({ source, externalJobId }) => ({ source, externalJobId })),
                 ...(normalizedUrls.length > 0 ? [{ normalizedUrl: { in: normalizedUrls } }] : []),
                 ...(normalizedUrls.length > 0 ? [{ url: { in: normalizedUrls } }] : []),
                 ...(fingerprints.length > 0 ? [{ fingerprint: { in: fingerprints } }] : []),
@@ -109,14 +173,16 @@ export async function findDuplicateJobsBatch(jobs: JobInput[]): Promise<Map<stri
     for (const job of jobs) {
         const normalizedUrl = normalizeJobUrl(job.url);
         const fingerprint = buildJobFingerprint(job);
+        const externalJobId = resolveExternalJobId(job);
 
         const duplicate = duplicates.find(d =>
+            (externalJobId && job.source && d.source === job.source && d.externalJobId === externalJobId) ||
             (normalizedUrl && (d.normalizedUrl === normalizedUrl || d.url === job.url)) ||
             (fingerprint && d.fingerprint === fingerprint)
         );
 
         if (duplicate) {
-            result.set(job.url || fingerprint || "", duplicate);
+            result.set(job.url || externalJobId || fingerprint || "", duplicate);
         }
     }
 
@@ -202,7 +268,7 @@ export async function createJobsBatch(jobs: JobInput[]): Promise<{
 }> {
     const duplicateMap = await findDuplicateJobsBatch(jobs);
 
-    const newJobs = jobs.filter(job => !duplicateMap.has(job.url || buildJobFingerprint(job) || ""));
+    const newJobs = jobs.filter(job => !duplicateMap.has(job.url || resolveExternalJobId(job) || buildJobFingerprint(job) || ""));
 
     const created: Job[] = [];
     const duplicates: Job[] = [];

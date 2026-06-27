@@ -11,14 +11,17 @@ import {
     generateResumeForJob,
 } from "./resume-generator.service";
 import { createJobSchema } from "../validation";
+import type { ResumeBaseSelectionMap } from "./resume-base-selector.service";
 
 export type ManualVacancyInput = {
     title?: string;
+    externalJobId?: string;
     company?: string;
     location?: string;
     url?: string;
     description?: string;
     resumeBaseId?: string;
+    resumeBaseIds?: ResumeBaseSelectionMap;
 };
 
 export type ExtractedManualVacancy = {
@@ -152,6 +155,7 @@ export async function processManualVacancy(userId: string, input: ManualVacancyI
 
     const data = createJobSchema.parse({
         title: input.title || extracted.title || inferTitleFromDescription(description),
+        externalJobId: input.externalJobId,
         company: input.company || extracted.company || "Manual vacancy",
         location: input.location || extracted.location,
         url,
@@ -165,33 +169,53 @@ export async function processManualVacancy(userId: string, input: ManualVacancyI
     const generatedCoverLetters = [];
     let message = result.isNew ? "Manual vacancy created." : "Manual vacancy already exists.";
 
+    // Always ensure the user has a job match record — even if analysis fails later.
+    // Without this, jobs created via manual entry become invisible in the user's list.
+    const existingMatch = await prisma.userJobMatch.findFirst({
+        where: { userId, jobId: result.job.id },
+    });
+    if (!existingMatch) {
+        await prisma.userJobMatch.create({
+            data: { userId, jobId: result.job.id, status: "NEW" },
+        }).catch(() => undefined); // ignore race-condition duplicates
+    }
+
+    // Check per-user resume/cover letter counts before deciding what to generate.
+    const [existingResumeCount, existingCoverLetterCount, alreadyAnalyzed] = await Promise.all([
+        prisma.resumeVersion.count({ where: { userId, jobId: result.job.id } }),
+        prisma.coverLetter.count({ where: { userId, jobId: result.job.id } }),
+        prisma.userJobMatch.findFirst({
+            where: { userId, jobId: result.job.id, matchScore: { not: null } },
+        }),
+    ]);
+
     try {
-        const analyzed = await analyzeJob(result.job.id, { userId, resumeBaseId: input.resumeBaseId });
+        // Skip re-analysis if already done for this user (saves tokens on re-submission).
+        let analyzed;
+        if (alreadyAnalyzed && !result.isNew) {
+            analyzed = { ...result.job, matchScore: alreadyAnalyzed.matchScore, analysis: alreadyAnalyzed.analysis, userMatch: alreadyAnalyzed };
+            message = `${message} Using existing analysis (score: ${alreadyAnalyzed.matchScore}).`;
+        } else {
+            analyzed = await analyzeJob(result.job.id, { userId, resumeBaseId: input.resumeBaseId, resumeBaseIds: input.resumeBaseIds });
+        }
         analyzedJobs.push(analyzed);
 
-        const existingResumeCount = await prisma.resumeVersion.count({
-            where: { userId, jobId: result.job.id },
-        });
-        const existingCoverLetterCount = await prisma.coverLetter.count({
-            where: { userId, jobId: result.job.id },
-        });
-
-        if (result.shouldProcess || existingResumeCount === 0) {
+        if (existingResumeCount === 0) {
             const [resume, coverLetter] = await Promise.all([
-                generateResumeForJob(result.job.id, { userId, resumeBaseId: input.resumeBaseId }),
+                generateResumeForJob(result.job.id, { userId, resumeBaseId: input.resumeBaseId, resumeBaseIds: input.resumeBaseIds }),
                 existingCoverLetterCount === 0
-                    ? generateCoverLetterForJob(result.job.id, { userId, resumeBaseId: input.resumeBaseId })
+                    ? generateCoverLetterForJob(result.job.id, { userId, resumeBaseId: input.resumeBaseId, resumeBaseIds: input.resumeBaseIds })
                     : Promise.resolve(null),
             ]);
             generatedResumes.push(resume);
             if (coverLetter) generatedCoverLetters.push(coverLetter);
-            message = `${message} Analysis, resume, and cover letter generated.`;
+            message = `${message} Resume and cover letter generated.`;
         } else if (existingCoverLetterCount === 0) {
-            const coverLetter = await generateCoverLetterForJob(result.job.id, { userId, resumeBaseId: input.resumeBaseId });
+            const coverLetter = await generateCoverLetterForJob(result.job.id, { userId, resumeBaseId: input.resumeBaseId, resumeBaseIds: input.resumeBaseIds });
             generatedCoverLetters.push(coverLetter);
-            message = `${message} Analysis updated. Existing resume kept, cover letter generated.`;
+            message = `${message} Existing resume kept. Cover letter generated.`;
         } else {
-            message = `${message} Analysis updated. Existing resume and cover letter kept.`;
+            message = `${message} Existing resume and cover letter kept.`;
         }
     } catch (error) {
         message = `${message} ${error instanceof Error ? error.message : "Analysis, resume, or cover letter generation failed."}`;

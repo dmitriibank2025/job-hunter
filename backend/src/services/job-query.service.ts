@@ -1,6 +1,7 @@
 import { prisma } from "../infrastructure/prisma";
 import { analyzeJob } from "./job-analyzer.service";
 import { ensureUserJobMatchesForUserArtifacts } from "./user-job-repair.service";
+import type { ResumeBaseSelectionMap } from "./resume-base-selector.service";
 
 // Конфигурация параллельной обработки
 const ANALYSIS_CONCURRENCY = parseInt(process.env.ANALYSIS_CONCURRENCY || "5", 10);
@@ -36,7 +37,7 @@ async function processBatch<T, R>(
     return { results, errors };
 }
 
-export async function analyzeMissingUserJobs(userId: string, resumeBaseId?: string) {
+export async function analyzeMissingUserJobs(userId: string, resumeBaseId?: string, resumeBaseIds?: ResumeBaseSelectionMap) {
     await ensureUserJobMatchesForUserArtifacts(userId);
 
     const matches = await prisma.userJobMatch.findMany({
@@ -54,7 +55,7 @@ export async function analyzeMissingUserJobs(userId: string, resumeBaseId?: stri
 
     const processor = async (match: typeof matches[0], index: number) => {
         console.log(`  ├─ Analyzing ${index + 1}/${matches.length}: ${match.job.title}`);
-        return await analyzeJob(match.job.id, { userId, resumeBaseId });
+        return await analyzeJob(match.job.id, { userId, resumeBaseId, resumeBaseIds });
     };
 
     const { results, errors } = await processBatch(matches, processor, ANALYSIS_CONCURRENCY);
@@ -101,21 +102,21 @@ export async function listTopUserJobs(userId: string) {
 export async function getUserJobStatistics(userId: string) {
     const [
         generatedResumesResult,
-        sentMatchesResult,
+        appliedMatchesResult,
+        submittedApplicationsResult,
         positiveVacanciesResult,
         negativeVacanciesResult,
-        noResponseVacanciesResult,
+        trackedVacanciesResult,
+        pendingFeedbackVacanciesResult,
         emailEventsResult,
+        rejectionRecordsResult,
     ] = await Promise.allSettled([
         prisma.resumeVersion.count({ where: { userId } }),
         prisma.userJobMatch.count({ where: { userId, appliedAt: { not: null } } }),
-        prisma.appliedVacancy.count({
-            where: {
-                userId,
-                status: { in: ["POSITIVE_RESPONSE", "RECRUITER_MESSAGE", "ACTION_REQUIRED"] },
-            },
-        }),
+        prisma.application.count({ where: { userId, OR: [{ submittedAt: { not: null } }, { status: "SUBMITTED" }] } }),
+        prisma.appliedVacancy.count({ where: { userId, status: "POSITIVE_RESPONSE" } }),
         prisma.appliedVacancy.count({ where: { userId, status: "REJECTION" } }),
+        prisma.appliedVacancy.count({ where: { userId } }),
         prisma.appliedVacancy.count({
             where: {
                 userId,
@@ -123,24 +124,41 @@ export async function getUserJobStatistics(userId: string) {
             },
         }),
         prisma.emailEvent.count({ where: { userId } }),
+        prisma.rejectionRecord.count({ where: { userId } }),
     ]);
 
     const generatedResumes = generatedResumesResult.status === "fulfilled" ? generatedResumesResult.value : 0;
-    const sentMatches = sentMatchesResult.status === "fulfilled" ? sentMatchesResult.value : 0;
+    const appliedMatches = appliedMatchesResult.status === "fulfilled" ? appliedMatchesResult.value : 0;
+    const submittedApplications = submittedApplicationsResult.status === "fulfilled" ? submittedApplicationsResult.value : 0;
     const positiveVacancies = positiveVacanciesResult.status === "fulfilled" ? positiveVacanciesResult.value : 0;
     const negativeVacancies = negativeVacanciesResult.status === "fulfilled" ? negativeVacanciesResult.value : 0;
-    const noResponseVacancies = noResponseVacanciesResult.status === "fulfilled" ? noResponseVacanciesResult.value : 0;
+    const trackedVacancies = trackedVacanciesResult.status === "fulfilled" ? trackedVacanciesResult.value : 0;
+    const pendingFeedbackVacancies = pendingFeedbackVacanciesResult.status === "fulfilled" ? pendingFeedbackVacanciesResult.value : 0;
     const emailEvents = emailEventsResult.status === "fulfilled" ? emailEventsResult.value : 0;
-    const sent = Math.max(sentMatches, positiveVacancies + negativeVacancies + noResponseVacancies);
+    const rejectionRecords = rejectionRecordsResult.status === "fulfilled" ? rejectionRecordsResult.value : 0;
+
+    // sent = max of manual applied marks or tracked applications
+    const sent = Math.max(appliedMatches, submittedApplications);
+    // tracked covers email-synced vacancies (includes positive + negative + pending)
+    const tracked = trackedVacancies;
+    // noResponse = tracked vacancies that are still in "sent/received/viewed" state
+    // (not yet positive or negative). Use tracked as denominator, not sent,
+    // because email-tracked and manually-marked are now unified via appliedAt sync.
+    const noResponse = Math.max(0, tracked - positiveVacancies - negativeVacancies - pendingFeedbackVacancies);
 
     return {
         success: true,
         generatedResumes,
         sent,
+        applied: appliedMatches,
+        submitted: submittedApplications,
+        tracked,
         positive: positiveVacancies,
         negative: negativeVacancies,
-        noResponse: Math.max(noResponseVacancies, sent - positiveVacancies - negativeVacancies),
+        noResponse,
+        pendingFeedback: pendingFeedbackVacancies,
         emailEvents,
+        rejectionRecords,
     };
 }
 
@@ -166,6 +184,11 @@ export async function listUserJobs(userId: string) {
                     format: true,
                     filePath: true,
                     pdfFilePath: true,
+                    atsScore: true,
+                    atsIssues: true,
+                    atsMatchedKeywords: true,
+                    atsMissingKeywords: true,
+                    atsValidatedAt: true,
                     createdAt: true,
                 },
             },

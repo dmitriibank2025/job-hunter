@@ -18,6 +18,7 @@ import {
     createStorageRouter,
     createUsersRouter,
 } from "./routes";
+import { handleGmailOAuthCallback } from "./routes/email.routes";
 
 loadEnv();
 
@@ -46,6 +47,7 @@ export function createApp() {
     app.use("/users", createUsersRouter());
     app.use("/admin", createAdminRouter());
     app.use("/candidate", createCandidateRouter());
+    app.get("/oauth/google/callback", handleGmailOAuthCallback);
     app.use("/email", createEmailRouter());
     app.use("/jobs", createJobsRouter());
     app.use("/linkedin", createLinkedInRouter());

@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import { prisma } from "../infrastructure/prisma";
 import { runJobAutomationWorkflowWithSource } from "./job-automation.service";
+import { ResumeBaseSelectionMap } from "./resume-base-selector.service";
 import { SearchPreferences } from "./search-preferences.service";
 
 let scheduled = false;
@@ -9,11 +10,18 @@ let isRunning = false; // Предотвращаем одновременный 
 
 function freshJobPreferences(): SearchPreferences {
     const dateRangeDays = Number(process.env.DAILY_FRESH_JOB_RANGE_DAYS ?? 1);
-    const minMatchScore = Number(process.env.MIN_MATCH_SCORE ?? 60);
+    const minMatchScore = Number(process.env.MIN_MATCH_SCORE ?? 70);
+
+    const excludedKeywordsRaw = process.env.JOB_SEARCH_EXCLUDED_KEYWORDS ?? "";
+    const excludedKeywords = excludedKeywordsRaw
+        .split(",")
+        .map((k) => k.trim())
+        .filter(Boolean);
 
     return {
         dateRangeDays: Number.isFinite(dateRangeDays) && dateRangeDays > 0 ? dateRangeDays : 1,
-        minMatchScore: Number.isFinite(minMatchScore) ? minMatchScore : 60,
+        minMatchScore: Number.isFinite(minMatchScore) ? minMatchScore : 70,
+        excludedKeywords: excludedKeywords.length > 0 ? excludedKeywords : undefined,
     };
 }
 
@@ -53,9 +61,22 @@ function localDateParts(date: Date, timezone: string) {
     };
 }
 
+function timeToMinutes(value: string): number | null {
+    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+    if (!match) return null;
+
+    return Number(match[1]) * 60 + Number(match[2]);
+}
+
 function isUserDueForDailyRun(user: Awaited<ReturnType<typeof listUsersForDailyFreshJobCheck>>[number], now: Date) {
     const local = localDateParts(now, user.dailyAutomationTimezone);
-    return local.time === user.dailyAutomationTime && user.dailyAutomationLastRunKey !== local.runKey
+    const currentMinutes = timeToMinutes(local.time);
+    const scheduledMinutes = timeToMinutes(user.dailyAutomationTime);
+
+    return currentMinutes !== null &&
+        scheduledMinutes !== null &&
+        currentMinutes >= scheduledMinutes &&
+        user.dailyAutomationLastRunKey !== local.runKey
         ? local.runKey
         : null;
 }
@@ -89,18 +110,24 @@ export async function runDailyFreshJobChecks(options: { force?: boolean; quiet?:
         dueUsers++;
 
         try {
-            await prisma.appUser.update({
-                where: { id: user.id },
-                data: { dailyAutomationLastRunKey: runKey },
-            });
-
+            const resumeBaseIds: ResumeBaseSelectionMap = {
+                FULLSTACK: user.dailyAutomationFullstackResumeBaseId ?? undefined,
+                BACKEND: user.dailyAutomationBackendResumeBaseId ?? undefined,
+                FRONTEND: user.dailyAutomationFrontendResumeBaseId ?? undefined,
+            };
             const report = await runJobAutomationWorkflowWithSource({
                 userId: user.id,
                 resumeBaseId,
+                resumeBaseIds,
                 sourceMode: "PROVIDERS",
                 searchLocation: process.env.JOB_SEARCH_LOCATION,
                 preferences,
                 allowGlobalLinkedInFallback,
+            });
+
+            await prisma.appUser.update({
+                where: { id: user.id },
+                data: { dailyAutomationLastRunKey: runKey },
             });
 
             results.push({

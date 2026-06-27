@@ -5,21 +5,16 @@ import {
     createUserResumeBase,
     deleteUserResumeBase,
     getWorkspaceUser,
-    LINKEDIN_ACCOUNT_NOTICE,
     listUserResumeBases,
-    registerWorkspaceUser,
     replaceUserEducations,
     replaceUserExperiences,
     replaceUserTechnologies,
     saveUploadedResume,
     updateUserDailyAutomationSettings,
     updateUserResumeBase,
-    upsertLinkedInAccount,
     upsertUserProfile,
 } from "../services/user-workspace.service";
 import {
-    linkedinAccountSchema,
-    registerUserSchema,
     updateUserResumeBaseSchema,
     uploadedResumeFileSchema,
     userEducationsSchema,
@@ -29,16 +24,6 @@ import {
     userResumeBaseSchema,
     userTechnologySchema,
 } from "../validation";
-
-export async function registerUser(req: Request, res: Response) {
-    const input = registerUserSchema.parse(req.body ?? {});
-    const user = await registerWorkspaceUser(input);
-
-    res.status(201).json({
-        success: true,
-        user,
-    });
-}
 
 export async function getUser(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
@@ -111,28 +96,6 @@ export async function updateEducations(req: Request, res: Response) {
     });
 }
 
-export async function updateLinkedInAccount(req: Request, res: Response) {
-    const userId = requiredParam(req, "id");
-    await requireUserAccess(req, userId);
-    const input = linkedinAccountSchema.parse(req.body ?? {});
-
-    if (input.password) {
-        res.status(400).json({
-            success: false,
-            message: "Raw LinkedIn passwords are not stored. Connect LinkedIn through the browser session flow.",
-            notice: LINKEDIN_ACCOUNT_NOTICE,
-        });
-        return;
-    }
-
-    const account = await upsertLinkedInAccount(userId, input);
-
-    res.json({
-        success: true,
-        account,
-    });
-}
-
 export async function updateDailyAutomation(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
     await requireUserAccess(req, userId);
@@ -145,6 +108,11 @@ export async function updateDailyAutomation(req: Request, res: Response) {
             enabled: user.dailyAutomationEnabled,
             time: user.dailyAutomationTime,
             timezone: user.dailyAutomationTimezone,
+            resumeBaseIds: {
+                FULLSTACK: user.dailyAutomationFullstackResumeBaseId,
+                BACKEND: user.dailyAutomationBackendResumeBaseId,
+                FRONTEND: user.dailyAutomationFrontendResumeBaseId,
+            },
         },
     });
 }

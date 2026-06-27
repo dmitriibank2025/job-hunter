@@ -7,12 +7,60 @@ import {
     upsertUserJobMatch,
 } from "./user-workspace.service";
 import { buildAdaptiveAnalysisPrompt } from "./prompt-learning.service";
+import { selectResumeBaseForJob } from "./resume-base-selector.service";
+import type { ResumeBaseSelectionMap } from "./resume-base-selector.service";
 import { logger } from "../Logger/logger";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 
 const MODEL = process.env.JOB_ANALYSIS_MODEL ?? "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS ?? 60_000);
+
+// ─── MASTER SKILLS CACHE ──────────────────────────────────────────────────────
+// During an automation run, the same user's base resumes are read on every
+// analyzeJob call. Cache the extracted skills for 10 minutes so batch runs
+// (100+ jobs) only hit the DB once.
+
+const MASTER_SKILLS_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+type MasterSkillsEntry = { skills: string; expiresAt: number };
+const masterSkillsCache = new Map<string, MasterSkillsEntry>();
+
+async function getMasterSkills(userId: string): Promise<string> {
+    const now = Date.now();
+    const cached = masterSkillsCache.get(userId);
+    if (cached && cached.expiresAt > now) return cached.skills;
+
+    const allBases = await prisma.userResumeBase.findMany({
+        where: { userId },
+        select: { content: true },
+        orderBy: [{ isDefault: "desc" }, { updatedAt: "desc" }],
+        take: 5,
+    });
+
+    const skillLines = new Map<string, string>();
+    for (const base of allBases) {
+        let inSkills = false;
+        for (const line of base.content.split("\n")) {
+            const t = line.trim();
+            if (t.toUpperCase() === "SKILLS") { inSkills = true; continue; }
+            if (inSkills && t && !t.includes(":") && /^[A-Z]/.test(t) && t.length < 30) { inSkills = false; }
+            if (inSkills && t.includes(":")) {
+                const key = t.split(":")[0].trim().toUpperCase();
+                if (key && !skillLines.has(key)) skillLines.set(key, t);
+            }
+        }
+    }
+
+    const skills = skillLines.size > 0 ? Array.from(skillLines.values()).join("\n") : "";
+    masterSkillsCache.set(userId, { skills, expiresAt: now + MASTER_SKILLS_TTL_MS });
+    return skills;
+}
+
+/** Call when base resumes are updated so the cache is immediately invalidated. */
+export function invalidateMasterSkillsCache(userId: string): void {
+    masterSkillsCache.delete(userId);
+}
 
 // ─── OPENAI SINGLETON ─────────────────────────────────────────────────────────
 
@@ -31,6 +79,7 @@ function getOpenAI(): OpenAI {
 type AnalyzeJobOptions = {
     userId?: string;
     resumeBaseId?: string;
+    resumeBaseIds?: ResumeBaseSelectionMap;
 };
 
 type JobAnalysis = {
@@ -91,17 +140,22 @@ export async function analyzeJob(jobId: string, options: AnalyzeJobOptions = {})
 
     await assertUserLimit(options.userId, "OPENAI_TOKENS");
 
-    const profile = await getWorkspaceCandidateProfile(options.userId, options.resumeBaseId);
+    const selectedResumeBaseId = options.resumeBaseIds
+        ? (await selectResumeBaseForJob(options.userId, job, options.resumeBaseId, options.resumeBaseIds)).id
+        : options.resumeBaseId;
+    const profile = await getWorkspaceCandidateProfile(options.userId, selectedResumeBaseId);
     if (!profile) throw new Error("Candidate profile not found for this user");
 
+    // Unified skills from all base resumes (cached for 10 min — see getMasterSkills).
+    const masterSkills = await getMasterSkills(options.userId);
+
     // ── Адаптивный промт ────────────────────────────────────────────────────
-    // Строится с учётом накопленных правил и истории отказов.
-    // При первых запусках (нет отказов) ведёт себя как обычный промт.
     const prompt = await buildAdaptiveAnalysisPrompt({
         userId: options.userId,
         fullName: profile.fullName,
         email: profile.email,
         resume: profile.resume,
+        masterSkills,
         jobTitle: job.title,
         jobCompany: job.company ?? "Unknown",
         jobLocation: job.location ?? "Unknown",
