@@ -55,6 +55,9 @@ model AppUser {
   dailyAutomationTime    String  @default("09:00")
   dailyAutomationTimezone String @default("Asia/Jerusalem")
   dailyAutomationLastRunKey String?
+  dailyAutomationFullstackResumeBaseId String?
+  dailyAutomationBackendResumeBaseId   String?
+  dailyAutomationFrontendResumeBaseId  String?
 
   profile               UserProfile?
   technologies          UserTechnology[]
@@ -69,6 +72,7 @@ model AppUser {
   jobMatches            UserJobMatch[]
   applications          Application[]
   emailEvents           EmailEvent[]
+  gmailAccounts         UserGmailAccount[]
   appliedVacancies      AppliedVacancy[]
   rejectionRecords      RejectionRecord[]
   promptRules           PromptRule[]
@@ -78,6 +82,23 @@ model AppUser {
 
   @@index([plan, status])
   @@index([createdAt])
+}
+
+model UserGmailAccount {
+  id            String   @id @default(uuid())
+  userId        String
+  user          AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email         String?
+  googleUserId  String   @default("me")
+  refreshToken  String
+  scopes        String[]
+  connectedAt   DateTime @default(now())
+  lastUsedAt    DateTime?
+  lastError     String?
+  isActive      Boolean  @default(true)
+
+  @@unique([userId])
+  @@index([isActive])
 }
 
 model AuthRefreshToken {
@@ -173,6 +194,7 @@ model UserResumeBase {
   target      ResumeBaseTarget @default(FULLSTACK)
   targetTitle String?
   content     String           @db.Text
+  sourceFilePath String?
   isDefault   Boolean          @default(false)
 
   createdAt DateTime @default(now())
@@ -296,6 +318,11 @@ model ResumeVersion {
   format      String  @default("markdown")
   filePath    String?
   pdfFilePath String?
+  atsScore    Int?
+  atsIssues   String[] @default([])
+  atsMatchedKeywords String[] @default([])
+  atsMissingKeywords String[] @default([])
+  atsValidatedAt DateTime?
 
   applications Application[]
 
