@@ -4,9 +4,23 @@ import { runJobAutomationWorkflowWithSource } from "./job-automation.service";
 import { ResumeBaseSelectionMap } from "./resume-base-selector.service";
 import { SearchPreferences } from "./search-preferences.service";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DEPLOYMENT CONSTRAINT — SINGLE BACKEND REPLICA ONLY.
+//
+// This scheduler coordinates the daily run with in-process state (`scheduled`,
+// `isRunning`) and a per-instance node-cron timer. There is NO distributed lock.
+// If two or more backend replicas run, each fires the cron independently and
+// users get duplicate runs and duplicate Telegram/email notifications.
+//
+// For the production beta, deploy exactly one backend instance
+// (docker-compose.aws.yml pins deploy.replicas: 1). A distributed queue/lock
+// (e.g. BullMQ + Redis, or a Postgres advisory lock) is the follow-up before
+// scaling horizontally — intentionally out of scope for this patch.
+// ─────────────────────────────────────────────────────────────────────────────
+
 let scheduled = false;
 let scheduledTask: ReturnType<typeof cron.schedule> | undefined;
-let isRunning = false; // Предотвращаем одновременный запуск
+let isRunning = false; // Предотвращаем одновременный запуск (в рамках одного процесса)
 
 function freshJobPreferences(): SearchPreferences {
     const dateRangeDays = Number(process.env.DAILY_FRESH_JOB_RANGE_DAYS ?? 1);

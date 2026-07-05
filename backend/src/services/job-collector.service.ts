@@ -26,11 +26,13 @@ import { upsertUserJobMatch } from "./user-workspace.service";
 function createProviderMap(options: {
     linkedInStorageStatePath?: string | null;
     preferences?: SearchPreferences;
+    userId?: string;
 } = {}): Record<string, JobProvider> {
     return {
         LINKEDIN: new LinkedInProvider({
             storageStatePath: options.linkedInStorageStatePath,
             preferences: options.preferences,
+            userId: options.userId,
         }),
         GREENHOUSE: new GreenhouseProvider(),
         GLASSDOOR: new GlassdoorProvider(),
@@ -38,7 +40,7 @@ function createProviderMap(options: {
         SQLINK: new SqlinkProvider(),
         GOTFRIENDS: new GotFriendsProvider(),
         ALLJOBS: new AllJobsProvider(),
-        CENTER_ISRAEL: new CenterIsraelCompaniesProvider(),
+        CENTER_ISRAEL: new CenterIsraelCompaniesProvider({ userId: options.userId }),
         MOCK: new MockProvider(),
     };
 }
@@ -46,6 +48,7 @@ function createProviderMap(options: {
 function activeProviders(providerNames?: string[], options: {
     linkedInStorageStatePath?: string | null;
     preferences?: SearchPreferences;
+    userId?: string;
 } = {}): JobProvider[] {
     const providerMap = createProviderMap(options);
     const configured = providerNames?.length
@@ -112,6 +115,7 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
              input: 0,
              output: 0,
              excludedKeyword: 0,
+             titleStopword: 0,
              targetRole: 0,
              targetLocation: 0,
              requiredTech: 0,
@@ -133,6 +137,7 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
          const providers = activeProviders(options.providerNames, {
              linkedInStorageStatePath,
              preferences,
+             userId: options.userId,
          });
          console.log(`\n[Job Collector] Active Providers (${providers.length}):`);
          for (const provider of providers) {
@@ -146,7 +151,7 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
          for (const provider of providers) {
              try {
                  console.log(`  ├─ Fetching from ${provider.source}...`);
-                 updateAutomationProgress({
+                 updateAutomationProgress(options.userId ?? "", {
                      stage: "Collecting",
                      message: `Fetching jobs from ${provider.source}...`,
                      currentTarget: provider.source,
@@ -167,12 +172,13 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
                  preferenceFilterStats.input += stats.input;
                  preferenceFilterStats.output += stats.output;
                  preferenceFilterStats.excludedKeyword += stats.excludedKeyword;
+                 preferenceFilterStats.titleStopword += stats.titleStopword;
                  preferenceFilterStats.targetRole += stats.targetRole;
                  preferenceFilterStats.targetLocation += stats.targetLocation;
                  preferenceFilterStats.requiredTech += stats.requiredTech;
                  preferenceFilterStats.dateRange += stats.dateRange;
                  console.log(`  │  Found: ${jobs.length} jobs, Relevant: ${relevant.length}, Preferences: ${filtered.length}`);
-                 updateAutomationProgress({
+                 updateAutomationProgress(options.userId ?? "", {
                      stage: "Collecting",
                      message: `${provider.source}: found ${jobs.length}, relevant ${relevant.length}, after preferences ${filtered.length}.`,
                      currentTarget: provider.source,
@@ -185,15 +191,15 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
                  });
                  allJobs.push(...filtered);
                  providerResults[provider.source] = {success: filtered.length, failed: 0};
-                 if (stats.excludedKeyword || stats.targetRole || stats.targetLocation || stats.requiredTech || stats.dateRange) {
+                 if (stats.excludedKeyword || stats.titleStopword || stats.targetRole || stats.targetLocation || stats.requiredTech || stats.dateRange) {
                      console.log(
-                         `  │  Preference skips: excluded=${stats.excludedKeyword}, role=${stats.targetRole}, location=${stats.targetLocation}, tech=${stats.requiredTech}, date=${stats.dateRange}`,
+                         `  │  Preference skips: excluded=${stats.excludedKeyword}, titleStopword=${stats.titleStopword}, role=${stats.targetRole}, location=${stats.targetLocation}, tech=${stats.requiredTech}, date=${stats.dateRange}`,
                      );
                  }
              } catch (error) {
                  const errorMsg = (error as any).message;
                  console.error(`  ├─ ✗ ${provider.source} failed: ${errorMsg}`);
-                 updateAutomationProgress({
+                 updateAutomationProgress(options.userId ?? "", {
                      stage: "Collecting",
                      message: `${provider.source} failed: ${errorMsg}`,
                      currentTarget: provider.source,

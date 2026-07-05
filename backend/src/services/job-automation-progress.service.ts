@@ -43,41 +43,53 @@ export type AutomationProgressState = {
 const DEFAULT_TOTAL_STEPS = 5;
 const MAX_HISTORY_SIZE = 100;
 
-const state: AutomationProgressState = {
-    running: false,
-    stage: "Idle",
-    message: "Ready.",
-    percent: 0,
-    currentStep: 0,
-    totalSteps: DEFAULT_TOTAL_STEPS,
-    currentTarget: null,
-    completedTargets: 0,
-    totalTargets: 0,
-    companiesScanned: 0,
-    careerPagesFound: 0,
-    matchedJobs: 0,
-    providerStatus: null,
-    startedAt: null,
-    updatedAt: null,
-    finishedAt: null,
-    error: null,
-    history: [],
-};
+// Per-user state map — key is userId
+const userStates = new Map<string, AutomationProgressState>();
+const userTimers = new Map<string, NodeJS.Timeout>();
+const userPendingUpdates = new Map<string, { stage: string; message: string; percent: number }>();
+const userCaches = new Map<string, { state: AutomationProgressState; at: number }>();
+const CACHE_TTL_MS = 500;
 
-function pushHistory(stage: string, message: string, percent: number) {
-    state.history.push({
-        at: new Date(),
-        stage,
-        message,
-        percent,
-    });
+function defaultState(): AutomationProgressState {
+    return {
+        running: false,
+        stage: "Idle",
+        message: "Ready.",
+        percent: 0,
+        currentStep: 0,
+        totalSteps: DEFAULT_TOTAL_STEPS,
+        currentTarget: null,
+        completedTargets: 0,
+        totalTargets: 0,
+        companiesScanned: 0,
+        careerPagesFound: 0,
+        matchedJobs: 0,
+        providerStatus: null,
+        startedAt: null,
+        updatedAt: null,
+        finishedAt: null,
+        error: null,
+        history: [],
+    };
+}
 
+function getState(userId: string): AutomationProgressState {
+    if (!userStates.has(userId)) {
+        userStates.set(userId, defaultState());
+    }
+    return userStates.get(userId)!;
+}
+
+function pushHistory(userId: string, stage: string, message: string, percent: number) {
+    const state = getState(userId);
+    state.history.push({ at: new Date(), stage, message, percent });
     if (state.history.length > MAX_HISTORY_SIZE) {
         state.history = state.history.slice(-MAX_HISTORY_SIZE);
     }
 }
 
-export function startAutomationProgress(totalSteps = DEFAULT_TOTAL_STEPS) {
+export function startAutomationProgress(userId: string, totalSteps = DEFAULT_TOTAL_STEPS) {
+    const state = getState(userId);
     state.running = true;
     state.stage = "Initializing";
     state.message = "Starting automation...";
@@ -96,13 +108,11 @@ export function startAutomationProgress(totalSteps = DEFAULT_TOTAL_STEPS) {
     state.finishedAt = null;
     state.error = null;
     state.history = [];
-    pushHistory(state.stage, state.message, state.percent);
+    userCaches.delete(userId);
+    pushHistory(userId, state.stage, state.message, state.percent);
 }
 
-let updateTimeout: NodeJS.Timeout | null = null;
-let pendingUpdate: { stage: string; message: string; percent: number } | null = null;
-
-export function updateAutomationProgress(input: {
+export function updateAutomationProgress(userId: string, input: {
     stage: string;
     message: string;
     percent?: number;
@@ -115,68 +125,50 @@ export function updateAutomationProgress(input: {
     matchedJobs?: number;
     providerStatus?: ProviderProgressStatus | null;
 }) {
-    // Мгновенно обновляем критичные поля
+    const state = getState(userId);
+
     state.stage = input.stage;
     state.message = input.message;
-
-    if (input.percent !== undefined) {
-        state.percent = Math.max(0, Math.min(100, input.percent));
-    }
-    if (input.currentStep !== undefined) {
-        state.currentStep = input.currentStep;
-    }
-    if (input.currentTarget !== undefined) {
-        state.currentTarget = input.currentTarget;
-    }
-    if (input.completedTargets !== undefined) {
-        state.completedTargets = input.completedTargets;
-    }
-    if (input.totalTargets !== undefined) {
-        state.totalTargets = input.totalTargets;
-    }
-    if (input.companiesScanned !== undefined) {
-        state.companiesScanned = input.companiesScanned;
-    }
-    if (input.careerPagesFound !== undefined) {
-        state.careerPagesFound = input.careerPagesFound;
-    }
-    if (input.matchedJobs !== undefined) {
-        state.matchedJobs = input.matchedJobs;
-    }
-    if ("providerStatus" in input) {
-        state.providerStatus = input.providerStatus ?? null;
-    }
-
+    if (input.percent !== undefined) state.percent = Math.max(0, Math.min(100, input.percent));
+    if (input.currentStep !== undefined) state.currentStep = input.currentStep;
+    if (input.currentTarget !== undefined) state.currentTarget = input.currentTarget;
+    if (input.completedTargets !== undefined) state.completedTargets = input.completedTargets;
+    if (input.totalTargets !== undefined) state.totalTargets = input.totalTargets;
+    if (input.companiesScanned !== undefined) state.companiesScanned = input.companiesScanned;
+    if (input.careerPagesFound !== undefined) state.careerPagesFound = input.careerPagesFound;
+    if (input.matchedJobs !== undefined) state.matchedJobs = input.matchedJobs;
+    if ("providerStatus" in input) state.providerStatus = input.providerStatus ?? null;
     state.updatedAt = new Date();
+    userCaches.delete(userId);
 
-    // Дебаунсинг для истории
-    if (updateTimeout) {
-        clearTimeout(updateTimeout);
-    }
+    // Debounced history write
+    const existing = userTimers.get(userId);
+    if (existing) clearTimeout(existing);
 
-    // Сохраняем текущие значения с гарантией, что они не undefined
-    pendingUpdate = {
+    userPendingUpdates.set(userId, {
         stage: state.stage,
         message: state.message,
-        percent: state.percent
-    };
+        percent: state.percent,
+    });
 
-    updateTimeout = setTimeout(() => {
-        if (pendingUpdate) {
-            // Теперь все поля гарантированно имеют тип string и number
-            pushHistory(pendingUpdate.stage, pendingUpdate.message, pendingUpdate.percent);
-            pendingUpdate = null;
+    const timer = setTimeout(() => {
+        const pending = userPendingUpdates.get(userId);
+        if (pending) {
+            pushHistory(userId, pending.stage, pending.message, pending.percent);
+            userPendingUpdates.delete(userId);
         }
-        updateTimeout = null;
+        userTimers.delete(userId);
     }, 100);
+    timer.unref?.();
+    userTimers.set(userId, timer);
 }
 
-export function finishAutomationProgress(message: string) {
-    if (updateTimeout) {
-        clearTimeout(updateTimeout);
-        updateTimeout = null;
-    }
+export function finishAutomationProgress(userId: string, message: string) {
+    const timer = userTimers.get(userId);
+    if (timer) { clearTimeout(timer); userTimers.delete(userId); }
+    userPendingUpdates.delete(userId);
 
+    const state = getState(userId);
     state.running = false;
     state.stage = "Complete";
     state.message = message;
@@ -184,57 +176,47 @@ export function finishAutomationProgress(message: string) {
     state.currentStep = state.totalSteps;
     state.updatedAt = new Date();
     state.finishedAt = new Date();
-    pushHistory(state.stage, state.message, state.percent);
-
-    pendingUpdate = null;
+    userCaches.delete(userId);
+    pushHistory(userId, state.stage, state.message, state.percent);
 }
 
-export function failAutomationProgress(error: string) {
-    if (updateTimeout) {
-        clearTimeout(updateTimeout);
-        updateTimeout = null;
-    }
+export function failAutomationProgress(userId: string, error: string) {
+    const timer = userTimers.get(userId);
+    if (timer) { clearTimeout(timer); userTimers.delete(userId); }
+    userPendingUpdates.delete(userId);
 
+    const state = getState(userId);
     state.running = false;
     state.stage = "Failed";
     state.message = error;
     state.error = error;
     state.updatedAt = new Date();
     state.finishedAt = new Date();
-    pushHistory(state.stage, state.message, state.percent);
-
-    pendingUpdate = null;
+    userCaches.delete(userId);
+    pushHistory(userId, state.stage, state.message, state.percent);
 }
 
-let cachedProgress: AutomationProgressState | null = null;
-let lastCacheInvalidation = 0;
-const CACHE_TTL_MS = 500;
-
-export function getAutomationProgress(): AutomationProgressState {
+export function getAutomationProgress(userId: string): AutomationProgressState {
     const now = Date.now();
+    const cached = userCaches.get(userId);
+    if (cached && now - cached.at < CACHE_TTL_MS) return cached.state;
 
-    if (cachedProgress && (now - lastCacheInvalidation) < CACHE_TTL_MS) {
-        return cachedProgress;
-    }
-
-    cachedProgress = {
+    const state = getState(userId);
+    const snapshot: AutomationProgressState = {
         ...state,
         startedAt: state.startedAt ? new Date(state.startedAt) : null,
         updatedAt: state.updatedAt ? new Date(state.updatedAt) : null,
         finishedAt: state.finishedAt ? new Date(state.finishedAt) : null,
-        history: state.history.map((entry) => ({
-            ...entry,
-            at: new Date(entry.at),
-        })),
+        history: state.history.map((e) => ({ ...e, at: new Date(e.at) })),
     };
-
-    lastCacheInvalidation = now;
-
-    return cachedProgress;
+    userCaches.set(userId, { state: snapshot, at: now });
+    return snapshot;
 }
 
-// Функция для сброса кеша (полезно при тестировании)
-export function resetAutomationProgressCache() {
-    cachedProgress = null;
-    lastCacheInvalidation = 0;
+export function isAutomationRunning(userId: string): boolean {
+    return userStates.get(userId)?.running ?? false;
+}
+
+export function resetAutomationProgressCache(userId: string) {
+    userCaches.delete(userId);
 }

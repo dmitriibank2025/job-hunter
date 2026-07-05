@@ -496,7 +496,10 @@ async function waitForPanelDescription(page: Page, timeoutMs: number): Promise<s
 export class LinkedInProvider implements JobProvider {
     source = "LINKEDIN";
 
-    constructor(private readonly options: { storageStatePath?: string | null; preferences?: SearchPreferences } = {}) {}
+    userId?: string;
+    constructor(private readonly options: { storageStatePath?: string | null; preferences?: SearchPreferences; userId?: string } = {}) {
+        this.userId = options.userId;
+    }
 
     async search(): Promise<ParsedJob[]> {
         const storageStatePath = this.options.storageStatePath
@@ -561,7 +564,7 @@ export class LinkedInProvider implements JobProvider {
 
             console.log(`[LinkedIn] Prefiltered ${filtered.length}/${cards.length} cards by title`);
 
-            updateAutomationProgress({
+            updateAutomationProgress(this.userId ?? "", {
                 stage: "Collecting",
                 message: `LinkedIn: ${filtered.length}/${cards.length} cards match title filter.`,
                 currentTarget: "LinkedIn title prefilter",
@@ -703,7 +706,7 @@ export class LinkedInProvider implements JobProvider {
                 let emptyPages = 0;
                 console.log(`[LinkedIn] Scanning: ${baseSearchUrl}`);
 
-                updateAutomationProgress({
+                updateAutomationProgress(this.userId ?? "", {
                     stage: "Collecting",
                     message: "LinkedIn: scanning search results...",
                     currentTarget: "LinkedIn search results",
@@ -729,7 +732,7 @@ export class LinkedInProvider implements JobProvider {
                     } catch (error) {
                         const message = error instanceof Error ? error.message : String(error);
                         console.warn(`[LinkedIn] Search page failed at start=${start}; keeping ${cards.length} collected cards: ${message}`);
-                        updateAutomationProgress({
+                        updateAutomationProgress(this.userId ?? "", {
                             stage: "Collecting",
                             message: `LinkedIn: search page start=${start} failed; keeping ${cards.length} cards.`,
                             currentTarget: `LinkedIn page start=${start}`,
@@ -777,7 +780,7 @@ export class LinkedInProvider implements JobProvider {
                         `[LinkedIn] start=${start}: found=${jobIds.length}, new=${newOnPage}, total=${cards.length}`,
                     );
 
-                    updateAutomationProgress({
+                    updateAutomationProgress(this.userId ?? "", {
                         stage: "Collecting",
                         message: `LinkedIn: start=${start}, ${newOnPage} new / ${jobIds.length} in list.`,
                         currentTarget: `LinkedIn page start=${start}`,
@@ -863,7 +866,7 @@ export class LinkedInProvider implements JobProvider {
                     console.log(
                         `[LinkedIn] Details ${i + 1}/${cards.length}: ${card.title} @ ${card.company ?? "Unknown"}`,
                     );
-                    updateAutomationProgress({
+                    updateAutomationProgress(this.userId ?? "", {
                         stage: "Collecting",
                         message: `LinkedIn: details ${i + 1}/${cards.length}.`,
                         currentTarget: `${card.title} @ ${card.company ?? "Unknown"}`,

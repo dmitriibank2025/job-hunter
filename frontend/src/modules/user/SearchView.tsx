@@ -250,6 +250,11 @@ export function SearchView({
               {matchScoreOptions.map((option) => <option value={option} key={option}>{option}%</option>)}
             </select></label>
           </div>
+          <div className="form-grid">
+            <label className="field"><span>Gmail Scan Range</span><select value={settings.gmailScanDays} onChange={(event) => persist({ ...settings, gmailScanDays: event.target.value })}>
+              {dateRangeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+            </select></label>
+          </div>
           <div className="inline-actions">
             <button className="btn btn-primary" onClick={() => onRunSearch("PROVIDERS")}>Providers</button>
             <button className="btn btn-secondary" onClick={() => onRunSearch("CENTER_ISRAEL")}>Product Firms</button>

@@ -3,7 +3,9 @@ export type SearchPreferences = {
     targetLocations?: string[];
     requiredTech?: string[];
     excludedKeywords?: string[];
+    excludedTitleKeywords?: string[];
     dateRangeDays?: number;
+    gmailScanDays?: number;
     minMatchScore?: number;
 };
 
@@ -19,6 +21,7 @@ export type SearchPreferenceFilterStats = {
     input: number;
     output: number;
     excludedKeyword: number;
+    titleStopword: number;
     targetRole: number;
     targetLocation: number;
     requiredTech: number;
@@ -30,6 +33,40 @@ const ROLE_ALIASES: Record<string, string[]> = {
     backend: ["backend", "back-end", "back end", "node.js", "nodejs", "server-side", "api developer"],
     fullstack: ["fullstack", "full-stack", "full stack", "full-stack developer", "full stack developer"],
 };
+
+// Suggested values for `excludedTitleKeywords` (seniority levels / role categories that
+// commonly don't fit a dev search). Not applied automatically — callers opt in by putting
+// these (or their own words) into SearchPreferences.excludedTitleKeywords.
+export const SUGGESTED_EXCLUDED_TITLE_KEYWORDS: string[] = [
+    "senior",
+    "sr.",
+    "lead",
+    "principal",
+    "staff",
+    "director",
+    "head of",
+    "vp",
+    "chief",
+    "manager",
+    "qa",
+    "quality assurance",
+    "sdet",
+    "devops",
+    "sre",
+    "site reliability",
+    "scrum master",
+    "product manager",
+    "project manager",
+    "business analyst",
+    "data analyst",
+    "data scientist",
+    "sales",
+    "marketing",
+    "recruiter",
+    "talent acquisition",
+    "customer success",
+    "support engineer",
+];
 
 function normalizeTerm(value: string): string {
     return value.toLowerCase().replace(/\s+/g, " ").trim();
@@ -136,10 +173,12 @@ export function filterJobsBySearchPreferences<T extends SearchableJob>(
     const targetLocations = preferences.targetLocations ?? [];
     const requiredTech = preferences.requiredTech ?? [];
     const excludedKeywords = preferences.excludedKeywords ?? [];
+    const titleStopwords = preferences.excludedTitleKeywords ?? [];
     const stats: SearchPreferenceFilterStats = {
         input: jobs.length,
         output: 0,
         excludedKeyword: 0,
+        titleStopword: 0,
         targetRole: 0,
         targetLocation: 0,
         requiredTech: 0,
@@ -152,6 +191,13 @@ export function filterJobsBySearchPreferences<T extends SearchableJob>(
 
         if (excludedKeywords.length && matchesAny(text, excludedKeywords)) {
             stats.excludedKeyword++;
+            continue;
+        }
+
+        // Hard filter: a title stopword hit (e.g. "Senior", "QA", "DevOps") is excluded
+        // even if the job would otherwise match targetRoles/requiredTech.
+        if (titleStopwords.length && matchesAny(job.title, titleStopwords)) {
+            stats.titleStopword++;
             continue;
         }
 
@@ -189,8 +235,12 @@ export function normalizeSearchPreferences(input: SearchPreferences = {}): Searc
         targetLocations: parsePreferenceTerms(input.targetLocations),
         requiredTech: parsePreferenceTerms(input.requiredTech),
         excludedKeywords: parsePreferenceTerms(input.excludedKeywords),
+        excludedTitleKeywords: parsePreferenceTerms(input.excludedTitleKeywords),
         dateRangeDays: Number.isFinite(Number(input.dateRangeDays)) && Number(input.dateRangeDays) > 0
             ? Number(input.dateRangeDays)
+            : undefined,
+        gmailScanDays: Number.isFinite(Number(input.gmailScanDays)) && Number(input.gmailScanDays) > 0
+            ? Number(input.gmailScanDays)
             : undefined,
         minMatchScore: Number.isFinite(Number(input.minMatchScore))
             ? Math.max(0, Math.min(100, Number(input.minMatchScore)))

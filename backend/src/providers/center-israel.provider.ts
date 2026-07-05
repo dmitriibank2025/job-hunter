@@ -803,6 +803,11 @@ async function inspectCareerPageWithTimeout(
 
 export class CenterIsraelCompaniesProvider implements JobProvider {
     source = "CENTER_ISRAEL";
+    userId?: string;
+
+    constructor(options: { userId?: string } = {}) {
+        this.userId = options.userId;
+    }
 
     async search(): Promise<ParsedJob[]> {
         const browser = await createProviderBrowser({
@@ -825,7 +830,7 @@ export class CenterIsraelCompaniesProvider implements JobProvider {
 
                     const company = targets[index];
                     companiesScanned = Math.max(companiesScanned, index + 1);
-                    updateAutomationProgress({
+                    updateAutomationProgress(this.userId ?? "", {
                         stage: "Center Israel",
                         message: `Scanning company ${index + 1}/${targets.length}: ${company.name}`,
                         percent: Math.round((completedTargets / Math.max(targets.length, 1)) * 100),
@@ -853,7 +858,7 @@ export class CenterIsraelCompaniesProvider implements JobProvider {
                         error: result.error,
                     });
 
-                    updateAutomationProgress({
+                    updateAutomationProgress(this.userId ?? "", {
                         stage: "Center Israel",
                         message: result.error
                             ? `Failed to scan ${company.name}: ${result.error.slice(0, 120)}`
@@ -874,7 +879,7 @@ export class CenterIsraelCompaniesProvider implements JobProvider {
 
             await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
-            updateAutomationProgress({
+            updateAutomationProgress(this.userId ?? "", {
                 stage: "Center Israel",
                 message: `Finished scanning ${targets.length} companies.`,
                 percent: 100,

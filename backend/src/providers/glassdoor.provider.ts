@@ -61,6 +61,27 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Glassdoor serves an anti-bot interstitial whose body text we must never store
+// as a job description.
+function isChallengeText(text: string | undefined): boolean {
+    if (!text) return false;
+    const t = text.toLowerCase();
+    return (
+        t.includes("humans only") ||
+        t.includes("verify you are a human") ||
+        t.includes("help us protect glassdoor") ||
+        t.includes("please verify you're a human")
+    );
+}
+
+// Glassdoor job-listing URLs carry the listing id as `?jl=<digits>`; we use it
+// to locate the matching card anchor on the SERP for clicking.
+function jobListingId(url?: string): string | undefined {
+    if (!url) return undefined;
+    const m = /[?&]jl=(\d+)/.exec(url);
+    return m?.[1];
+}
+
 // ─── EXTRACT CARDS SCRIPT ─────────────────────────────────────────────────────
 // Передаётся как строка чтобы избежать __name от esbuild (см. linkedin.provider.ts)
 
@@ -145,10 +166,16 @@ export class GlassdoorProvider implements JobProvider {
                     : undefined,
             });
 
-            // Одна страница для всех поисковых URL
+            // Single SERP page: collect cards AND read each description from the
+            // in-page side panel. Glassdoor renders the full description
+            // (div.JobDetails_jobDescription) on the SERP when a card is clicked,
+            // so we avoid navigating to per-listing detail URLs which trigger the
+            // "Humans only" anti-bot interstitial.
             const searchPage = await context.newPage();
-            const cards: GlassdoorCard[] = [];
+            const jobs: ParsedJob[] = [];
             const seenUrls = new Set<string>();
+
+            const DESC_SELECTOR = "[class*='JobDetails_jobDescription'], [data-test='jobDescriptionContent'], [class*='jobDescription']";
 
             try {
                 for (const searchUrl of glassdoorSearchUrls()) {
@@ -159,7 +186,6 @@ export class GlassdoorProvider implements JobProvider {
                         timeout: 60_000,
                     });
 
-                    // Ждём реальный элемент вместо фиксированного sleep
                     await searchPage
                         .waitForSelector(
                             "li[data-test*='job'], div[data-test*='job'], a[href*='/job-listing/']",
@@ -167,7 +193,6 @@ export class GlassdoorProvider implements JobProvider {
                         )
                         .catch(() => null);
 
-                    // Передаём скрипт строкой — не затрагивается бандлером
                     const rawCards = await searchPage.evaluate(
                         ([script, max]) => {
                             // eslint-disable-next-line no-new-func
@@ -178,55 +203,40 @@ export class GlassdoorProvider implements JobProvider {
                     );
 
                     let newOnPage = 0;
-                    for (const raw of rawCards) {
-                        if (!raw.url || seenUrls.has(raw.url)) continue;
-                        seenUrls.add(raw.url);
+                    for (const card of rawCards) {
+                        if (!card.url || seenUrls.has(card.url)) continue;
+                        seenUrls.add(card.url);
                         newOnPage++;
-                        cards.push(raw);
-                    }
 
-                    console.log(
-                        `[Glassdoor] ${searchUrl}: ${newOnPage} new cards, total=${cards.length}`,
-                    );
-                }
-            } finally {
-                await searchPage.close();
-            }
+                        let description: string | undefined;
 
-            // Одна страница для деталей — переиспользуется
-            const jobs: ParsedJob[] = [];
-            const detailPage = await context.newPage();
+                        if (shouldFetchProviderDetails()) {
+                            const jlId = jobListingId(card.url);
+                            try {
+                                // Click the matching card so the description panel renders in-place.
+                                const cardLink = jlId
+                                    ? searchPage.locator(`a[href*="jl=${jlId}"]`).first()
+                                    : searchPage.locator(`a[href="${card.url}"]`).first();
+                                await cardLink.click({ timeout: 8_000 });
 
-            try {
-                for (let index = 0; index < cards.length; index++) {
-                    const card = cards[index];
-                    if (!card.url) continue;
+                                // Wait for the panel to (re)populate with this listing's description.
+                                await searchPage.waitForSelector(DESC_SELECTOR, { timeout: 8_000 }).catch(() => null);
+                                await sleep(600); // allow panel content to swap
 
-                    if (!shouldFetchProviderDetails()) {
-                        jobs.push({
-                            title: card.title,
-                            company: card.company,
-                            location: card.location ?? DEFAULT_SEARCH_LOCATION,
-                            url: card.url,
-                            postedAt: parsePostedAt(card.postedAt),
-                            source: "GLASSDOOR",
-                            description: cardDescription(card),
-                        });
-                        continue;
-                    }
+                                const panelText = await searchPage
+                                    .locator(DESC_SELECTOR)
+                                    .first()
+                                    .textContent({ timeout: 5_000 })
+                                    .catch(() => null);
 
-                    try {
-                        await detailPage.goto(card.url, {
-                            waitUntil: "domcontentloaded",
-                            timeout: 60_000,
-                        });
-
-                        const description = await extractDescription(detailPage, [
-                            "[data-test='jobDescriptionContent']",
-                            ".jobDescriptionContent",
-                            "[class*='JobDescription']",
-                            "main",
-                        ]);
+                                const trimmed = panelText?.trim();
+                                if (trimmed && trimmed.length >= 80 && !isChallengeText(trimmed)) {
+                                    description = trimmed;
+                                }
+                            } catch (error) {
+                                console.error(`[Glassdoor] panel description failed for ${card.url}:`, (error as Error).message);
+                            }
+                        }
 
                         jobs.push({
                             title: card.title,
@@ -238,27 +248,15 @@ export class GlassdoorProvider implements JobProvider {
                             description: description ?? cardDescription(card),
                         });
 
-                    } catch (error) {
-                        console.error(`[Glassdoor] Failed details for ${card.url}:`, error);
-
-                        // Не теряем карточку при ошибке — сохраняем с fallback
-                        jobs.push({
-                            title: card.title,
-                            company: card.company,
-                            location: card.location ?? DEFAULT_SEARCH_LOCATION,
-                            url: card.url,
-                            postedAt: parsePostedAt(card.postedAt),
-                            source: "GLASSDOOR",
-                            description: cardDescription(card),
-                        });
-                    }
-
-                    if (index < cards.length - 1) {
                         await sleep(DETAIL_THROTTLE_MS);
                     }
+
+                    console.log(
+                        `[Glassdoor] ${searchUrl}: ${newOnPage} new cards, total=${jobs.length}`,
+                    );
                 }
             } finally {
-                await detailPage.close();
+                await searchPage.close();
             }
 
             return filterRelevantJobs(jobs);

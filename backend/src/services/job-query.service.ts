@@ -210,6 +210,35 @@ export async function listUserJobs(userId: string) {
         orderBy: { createdAt: "desc" },
     });
 
+    // Composite ranking: primarily the LLM match score, adjusted by the
+    // recommendation and the generated resume's requirement coverage, with recency
+    // as a stable tiebreaker. This surfaces the strongest, freshest, apply-worthy
+    // vacancies first instead of ordering purely by matchScore or creation time.
+    const rankOf = (job: (typeof jobs)[number]): number => {
+        const match = job.userMatches?.[0];
+        const matchScore = typeof match?.matchScore === "number" ? match.matchScore : 40;
+        const rec = (() => {
+            const a = match?.analysis as { recommendation?: string } | null | undefined;
+            const r = a?.recommendation;
+            return r === "APPLY" ? 10 : r === "SKIP" ? -30 : 0;
+        })();
+        // Best generated resume's job-fit coverage, when available, nudges rank.
+        const bestAts = (job.resumeVersions ?? [])
+            .map((rv) => (typeof rv.atsScore === "number" ? rv.atsScore : null))
+            .filter((v): v is number => v !== null)
+            .sort((a, b) => b - a)[0];
+        const atsNudge = bestAts !== undefined ? (bestAts - 70) * 0.15 : 0;
+        return matchScore + rec + atsNudge;
+    };
+    const recency = (job: (typeof jobs)[number]): number =>
+        (job.postedAt ?? job.createdAt)?.getTime?.() ?? 0;
+
+    jobs.sort((a, b) => {
+        const dr = rankOf(b) - rankOf(a);
+        if (Math.abs(dr) > 0.01) return dr;
+        return recency(b) - recency(a);
+    });
+
     return jobs.map((job) => {
         const userMatch = "userMatches" in job ? job.userMatches?.[0] : undefined;
         const { userMatches: _userMatches, ...rest } = job;

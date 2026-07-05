@@ -270,7 +270,27 @@ export async function createResumeDocxFromTemplate(input: {
     return true;
 }
 
+// LibreOffice headless converts crash (SIGABRT in syncRepositories) when several
+// soffice processes start at once: they race on the shared bundled-extension
+// cache (/usr/lib/libreoffice/share/prereg/bundled). Resume generation runs with
+// concurrency, so we serialize conversions through this promise chain — only one
+// soffice runs at a time. Conversions are short, so throughput impact is minimal.
+let docxToPdfQueue: Promise<unknown> = Promise.resolve();
+function runExclusive<T>(task: () => Promise<T>): Promise<T> {
+    const run = docxToPdfQueue.then(task, task);
+    // keep the chain alive regardless of individual task outcome
+    docxToPdfQueue = run.then(() => undefined, () => undefined);
+    return run;
+}
+
 export async function convertDocxToPdf(input: {
+    docxPath: string;
+    outputPath: string;
+}): Promise<string> {
+    return runExclusive(() => convertDocxToPdfInner(input));
+}
+
+async function convertDocxToPdfInner(input: {
     docxPath: string;
     outputPath: string;
 }): Promise<string> {
@@ -279,16 +299,27 @@ export async function convertDocxToPdf(input: {
 
     try {
         const libreOfficeBin = process.env.LIBREOFFICE_BIN ?? "soffice";
+        // Each invocation gets its own LibreOffice user profile. Without this,
+        // concurrent soffice processes collide on the shared default profile
+        // ($HOME/.config/libreoffice) and fail with exit code 1.
+        const profileDir = path.join(tempDir, "lo-profile");
+        await ensureDir(profileDir);
         await execFileAsync(libreOfficeBin, [
+            `-env:UserInstallation=file://${profileDir}`,
             "--headless",
             "--nologo",
             "--nofirststartwizard",
+            "--norestore",
             "--convert-to",
             "pdf",
             "--outdir",
             tempDir,
             input.docxPath,
-        ], { timeout: 120_000 });
+        ], {
+            timeout: 120_000,
+            // Ensure HOME points at a writable dir even if the container env lacks one.
+            env: { ...process.env, HOME: process.env.HOME && process.env.HOME !== "/" ? process.env.HOME : tempDir },
+        });
 
         const convertedPath = path.join(
             tempDir,
@@ -429,13 +460,14 @@ function styledJobHeader(line: string): Paragraph {
     const parts = line.split("|").map((p) => p.trim());
     const runs: TextRun[] = [];
     parts.forEach((part, i) => {
+        const p = stripInlineMarkdown(part);
         if (i === 0) {
-            runs.push(new TextRun({ text: part, bold: true, size: 22, color: DARK }));
+            runs.push(new TextRun({ text: p, bold: true, size: 22, color: DARK }));
         } else if (i === 1) {
             runs.push(new TextRun({ text: "  |  ", bold: false, size: 22, color: GRAY }));
-            runs.push(new TextRun({ text: part, bold: true, size: 22, color: BLUE }));
+            runs.push(new TextRun({ text: p, bold: true, size: 22, color: BLUE }));
         } else {
-            runs.push(new TextRun({ text: `  |  ${part}`, color: GRAY }));
+            runs.push(new TextRun({ text: `  |  ${p}`, color: GRAY }));
         }
     });
     return new Paragraph({ spacing: { before: 160, after: 40 }, children: runs });
@@ -444,7 +476,7 @@ function styledJobHeader(line: string): Paragraph {
 function styledProjectName(text: string): Paragraph {
     return new Paragraph({
         spacing: { before: 20, after: 60 },
-        children: [new TextRun({ text, bold: true, italics: true, color: GRAY })],
+        children: [new TextRun({ text: stripInlineMarkdown(text), bold: true, italics: true, color: GRAY })],
     });
 }
 
@@ -452,7 +484,7 @@ function styledBullet(text: string): Paragraph {
     return new Paragraph({
         bullet: { level: 0 },  // docx library generates proper numbering.xml
         spacing: { before: 40, after: 40 },
-        children: [new TextRun({ text, color: DARK })],
+        children: parseBoldSegments(text, 20, DARK),
     });
 }
 
@@ -473,7 +505,7 @@ function styledTechnologies(text: string): Paragraph {
         spacing: { before: 60, after: 20 },
         children: [
             new TextRun({ text: label, bold: true, size: 19, color: GRAY }),
-            new TextRun({ text: rest,  bold: false, italics: true, size: 19, color: GRAY }),
+            new TextRun({ text: stripInlineMarkdown(rest),  bold: false, italics: true, size: 19, color: GRAY }),
         ],
     });
 }
@@ -486,8 +518,8 @@ function styledSkillLine(text: string): Paragraph {
     return new Paragraph({
         spacing: { before: 40, after: 40 },
         children: [
-            new TextRun({ text: label,  bold: true,  color: DARK }),
-            new TextRun({ text: values, bold: false, color: DARK }),
+            new TextRun({ text: stripInlineMarkdown(label),  bold: true,  color: DARK }),
+            new TextRun({ text: stripInlineMarkdown(values), bold: false, color: DARK }),
         ],
     });
 }
@@ -497,8 +529,9 @@ function styledEducationEntry(text: string): Paragraph {
     const parts = text.split("|").map((p) => p.trim());
     const runs: TextRun[] = [];
     parts.forEach((part, i) => {
-        if (i === 0) runs.push(new TextRun({ text: part, bold: true, color: DARK }));
-        else          runs.push(new TextRun({ text: `  |  ${part}`, color: GRAY }));
+        const p = stripInlineMarkdown(part);
+        if (i === 0) runs.push(new TextRun({ text: p, bold: true, color: DARK }));
+        else          runs.push(new TextRun({ text: `  |  ${p}`, color: GRAY }));
     });
     return new Paragraph({ spacing: { before: 100, after: 20 }, children: runs });
 }
@@ -507,7 +540,7 @@ function styledItalicLine(text: string): Paragraph {
     // ref: sp_after=40, italic, gray, no sz
     return new Paragraph({
         spacing: { before: 0, after: 40 },
-        children: [new TextRun({ text, italics: true, color: GRAY })],
+        children: [new TextRun({ text: stripInlineMarkdown(text), italics: true, color: GRAY })],
     });
 }
 
@@ -519,14 +552,43 @@ function styledLanguages(text: string): Paragraph {
     });
 }
 
+// Strip inline markdown emphasis markers (**bold**, *italic*) for structural
+// lines whose styling is fixed (headers, skill labels, etc.) — we don't render
+// emphasis there, but the markers must never leak as literal characters.
+function stripInlineMarkdown(text: string): string {
+    return text
+        .replace(/\*\*([^*]+)\*\*/g, "$1")
+        .replace(/\*([^*]+)\*/g, "$1")
+        .replace(/\*\*/g, "")
+        .replace(/(^|\s)\*(?=\S)|\*(?=\s|$)/g, "$1");
+}
+
 function parseBoldSegments(text: string, size: number, color: string): TextRun[] {
-    // handles **bold** inline markdown within bullet text
+    // Render inline markdown emphasis as real formatting instead of leaking the
+    // raw markers (**bold**, *italic*). Tokenize on bold first, then italic.
     const runs: TextRun[] = [];
-    const parts = text.split(/\*\*([^*]+)\*\*/g);
-    parts.forEach((part, i) => {
-        runs.push(new TextRun({ text: part, bold: i % 2 === 1, size, color }));
+    const stripStray = (s: string) => s.replace(/\*\*/g, "").replace(/(^|\s)\*(?=\S)|\*(?=\s|$)/g, "$1");
+
+    const boldParts = text.split(/\*\*([^*]+)\*\*/g);
+    boldParts.forEach((boldPart, bi) => {
+        if (!boldPart) return;
+        const bold = bi % 2 === 1;
+        if (bold) {
+            runs.push(new TextRun({ text: boldPart, bold: true, size, color }));
+            return;
+        }
+        // Within non-bold segments, parse *italic*.
+        const italicParts = boldPart.split(/\*([^*]+)\*/g);
+        italicParts.forEach((part, ii) => {
+            if (!part) return;
+            const clean = ii % 2 === 1 ? part : stripStray(part);
+            if (!clean) return;
+            runs.push(new TextRun({ text: clean, italics: ii % 2 === 1, size, color }));
+        });
     });
-    return runs;
+
+    // Never return an empty children array (docx requires at least one run).
+    return runs.length ? runs : [new TextRun({ text: stripStray(text), size, color })];
 }
 
 const SECTION_HEADINGS = new Set(["SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION", "LANGUAGES", "PERSONAL PROJECTS"]);
@@ -573,8 +635,10 @@ function buildStyledParagraphs(content: string): Paragraph[] {
         // Third = contact
         if (!contactDone) { paragraphs.push(styledContact(line)); contactDone = true; continue; }
 
-        // Section headings — also strip markdown prefix (## Summary → SUMMARY)
-        const lineNoMd = line.replace(/^#+\s*/, "");
+        // Section headings — strip any leading bullet AND markdown prefix so a
+        // skeleton-merge artifact like "● ## Personal Projects" is still detected
+        // as the PERSONAL PROJECTS heading instead of rendering as a bullet.
+        const lineNoMd = line.replace(/^[•\-\*●]\s*/, "").replace(/^#+\s*/, "");
         if (SECTION_HEADINGS.has(lineNoMd.toUpperCase())) {
             const heading = lineNoMd.toUpperCase();
             paragraphs.push(styledSectionHeading(heading));
@@ -591,7 +655,7 @@ function buildStyledParagraphs(content: string): Paragraph[] {
         if (inSummary) {
             paragraphs.push(new Paragraph({
                 spacing: { before: 80, after: 80 },
-                children: [new TextRun({ text: line, size: 20, color: DARK })],
+                children: parseBoldSegments(line, 20, DARK),
             }));
             continue;
         }
@@ -670,7 +734,7 @@ function buildStyledParagraphs(content: string): Paragraph[] {
         // Default — same size as body (10pt)
         paragraphs.push(new Paragraph({
             spacing: { before: 40, after: 40 },
-            children: [new TextRun({ text: line, size: 20, color: DARK })],
+            children: parseBoldSegments(line, 20, DARK),
         }));
     }
 

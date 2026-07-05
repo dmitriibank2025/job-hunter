@@ -12,6 +12,7 @@ export const defaults = {
   excludedKeywords: "PHP, WordPress, unpaid internship, C#, .NET",
   minMatchScore: "70",
   dateRangeDays: "7",
+  gmailScanDays: "7",
 };
 
 export const storageKey = "jobHunterReactSettings";

@@ -249,7 +249,7 @@ export async function recordRejection(input: RecordRejectionInput): Promise<void
     });
 
     if (duplicate) {
-        logger.info({ userId, jobId }, "[PromptLearning] Duplicate rejection skipped");
+        logger.debug({ userId, jobId }, "[PromptLearning] Duplicate rejection skipped");
         return;
     }
 

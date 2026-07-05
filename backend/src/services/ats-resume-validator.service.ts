@@ -3,19 +3,43 @@ import { Job } from "@prisma/client";
 type Role = "frontend" | "backend" | "fullstack" | "platform" | "data" | "security" | "qa" | "general";
 
 export type AtsResumeValidation = {
+    /** Unified job-fit score (0-100): resume quality minus weighted requirement gaps. */
     score: number;
+    /** Resume-consistency score only (structural issues). Drives the generation repair gate. */
+    qualityScore: number;
+    /** Coverage of the vacancy's must-have keywords, 0-100. */
+    coverage: number;
     role: Role;
     issues: string[];
     matchedKeywords: string[];
     missingImportantKeywords: string[];
+    /** Must-have keywords (from title / requirements section) missing from the resume. */
+    missingMustHave: string[];
 };
 
 const KEYWORDS = [
-    "TypeScript", "JavaScript", "React", "Angular", "Vue", "Node.js", "Express", "NestJS",
-    "REST", "REST APIs", "GraphQL", "AWS", "Lambda", "SQS", "SNS", "DynamoDB",
-    "Docker", "Kubernetes", "MongoDB", "PostgreSQL", "Redis", "NoSQL", "SQL",
-    "SaaS", "Microservices", "CI/CD", "Testing", "Jest", "Playwright", "Python",
-    "Security", "JWT", "RBAC", "Datadog", "Splunk", "Firebase", "Figma",
+    // Frontend
+    "TypeScript", "JavaScript", "React", "Angular", "Vue", "Svelte", "Next.js",
+    "Redux", "Tailwind", "HTML", "CSS",
+    // Backend languages / runtimes (critical for correct must-have detection —
+    // a Java/Go role must not read as a full match for a Node.js candidate)
+    "Node.js", "Express", "NestJS", "Java", "Kotlin", "Scala", "Go", "Golang",
+    "Rust", "C++", "C#", ".NET", "Ruby", "Rails", "PHP", "Elixir", "Python",
+    // APIs / messaging
+    "REST", "REST APIs", "GraphQL", "gRPC", "Kafka", "RabbitMQ", "WebSocket",
+    // Cloud / infra
+    "AWS", "GCP", "Azure", "Lambda", "SQS", "SNS", "DynamoDB", "Docker",
+    "Kubernetes", "Terraform", "Helm", "Serverless", "CI/CD",
+    // Data
+    "MongoDB", "PostgreSQL", "MySQL", "Redis", "Elasticsearch", "Snowflake",
+    "Spark", "Airflow", "NoSQL", "SQL",
+    // AI / ML (many modern roles require these — previously invisible to scoring)
+    "LLM", "RAG", "Machine Learning", "ML", "PyTorch", "TensorFlow", "LangChain",
+    // Observability / reliability
+    "Observability", "Prometheus", "Grafana", "Datadog", "Splunk",
+    // Misc
+    "SaaS", "Microservices", "Testing", "Jest", "Playwright",
+    "Security", "JWT", "RBAC", "Firebase", "Figma",
 ];
 
 const TECHNOLOGY_EVIDENCE_RULES: Array<{ label: string; tech: RegExp; evidence: RegExp }> = [
@@ -108,6 +132,53 @@ function normalizeRoleLabel(value: string) {
 function importantJobKeywords(job: Job) {
     const text = `${job.title}\n${job.description}`;
     return KEYWORDS.filter((keyword) => hasPhrase(text, keyword));
+}
+
+/**
+ * Split the vacancy's important keywords into MUST-HAVE and nice-to-have.
+ * Must-have = keyword present in the job TITLE, or in an explicit requirements
+ * context ("required", "must have", "X+ years of …", a "Requirements"/
+ * "You have" section). These carry real weight; nice-to-haves are lightly scored.
+ */
+// Keywords that are material the moment a vacancy names them at all: the primary
+// programming language/runtime, and core AI/ML domain terms. A candidate lacking
+// the job's required language or core domain is a real gap regardless of whether
+// the JD literally writes "required".
+const CORE_CRITICAL = new Set(
+    [
+        "Java", "Kotlin", "Scala", "Go", "Golang", "Rust", "C++", "C#", ".NET",
+        "Ruby", "PHP", "Elixir", "Python", "Node.js", "TypeScript",
+        "LLM", "RAG", "Machine Learning", "ML",
+    ].map((s) => s.toLowerCase()),
+);
+
+function classifyJobKeywords(job: Job): { mustHave: string[]; niceToHave: string[] } {
+    const all = importantJobKeywords(job);
+    const title = job.title ?? "";
+    const desc = job.description ?? "";
+
+    // Isolate the requirements portion of the description when present.
+    const reqMatch = /(requirements?|qualifications?|must[\s-]?have|you have|what you.?ll need|who you are)\b([\s\S]*)/i.exec(desc);
+    const requirementsText = reqMatch ? reqMatch[2] : desc;
+
+    const mustHave: string[] = [];
+    const niceToHave: string[] = [];
+    for (const kw of all) {
+        const inTitle = hasPhrase(title, kw);
+        const isCore = CORE_CRITICAL.has(kw.toLowerCase());
+        // keyword within ~60 chars of a strong requirement cue
+        const nearRequired = new RegExp(
+            `(required|must[\\s-]?have|proficien\\w*|strong|expert\\w*|\\d\\+?\\s*years?)[^.]{0,60}\\b${escapeRe(kw)}\\b|\\b${escapeRe(kw)}\\b[^.]{0,40}(required|must)`,
+            "i",
+        ).test(requirementsText);
+        if (inTitle || isCore || nearRequired) mustHave.push(kw);
+        else niceToHave.push(kw);
+    }
+    return { mustHave, niceToHave };
+}
+
+function escapeRe(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function extractExperienceBlocks(content: string) {
@@ -236,20 +307,39 @@ export function validateResumeAgainstJob(job: Job, content: string): AtsResumeVa
         }
     }
 
-    const issuePenalty = Math.min(70, issues.length * 12);
-    const missingPenalty = Math.min(10, missingImportantKeywords.length);
-    const score = Math.max(0, Math.min(100, 100 - issuePenalty - missingPenalty));
-
     if (normalizedResume.includes("senior backend developer | aws | node.js | typescript | nosql") && role !== "backend") {
         issues.push("Old fixed backend target line is still present for a non-backend role.");
     }
 
+    // ── Scoring ──────────────────────────────────────────────────────────────
+    // qualityScore: resume-consistency only (fixable structural issues). This
+    // drives the generation repair gate so it never chases unfixable gaps.
+    const issuePenalty = Math.min(70, issues.length * 12);
+    const qualityScore = Math.max(0, 100 - issuePenalty);
+
+    // Job fit: weight MUST-HAVE requirement coverage heavily (uncapped up to 60),
+    // nice-to-have lightly. This makes the headline score reflect real match, so a
+    // resume missing core requirements (e.g. Java, LLM/RAG) no longer reads as 100.
+    const { mustHave, niceToHave } = classifyJobKeywords(job);
+    const missingMustHave = mustHave.filter((kw) => !hasPhrase(content, kw));
+    const missingNice = niceToHave.filter((kw) => !hasPhrase(content, kw));
+    const mustHavePenalty = Math.min(60, missingMustHave.length * 10);
+    const nicePenalty = Math.min(12, missingNice.length * 2);
+    const coverage = mustHave.length
+        ? Math.round(((mustHave.length - missingMustHave.length) / mustHave.length) * 100)
+        : 100;
+
+    const score = Math.max(0, Math.min(100, qualityScore - mustHavePenalty - nicePenalty));
+
     return {
         score,
+        qualityScore,
+        coverage,
         role,
         issues,
         matchedKeywords,
         missingImportantKeywords,
+        missingMustHave,
     };
 }
 

@@ -8,7 +8,7 @@ import {
     saveTextFile,
     slugify,
 } from "./file-storage.service";
-import { convertDocxToPdf, createCoverLetterDocx, createResumeDocx, createResumeDocxFromTemplate } from "./docx.service";
+import { convertDocxToPdf, createCoverLetterDocx, createResumeDocx, createResumeDocxFromTemplate, createStyledResumeDocx } from "./docx.service";
 import { createBasicResumePdf } from "./resume-pdf.service";
 import {
     assertUserLimit,
@@ -69,6 +69,24 @@ const ROLE_KEYWORD_PRIORITIES = {
     qa: ["Playwright", "Cypress", "Jest", "Testing Library", "E2E Testing", "Unit Testing", "Automation", "CI/CD"],
     general: ["TypeScript", "JavaScript", "Node.js", "React", "AWS", "Docker", "PostgreSQL", "REST", "Distributed Systems"],
 } as const;
+
+const BANNED_RESUME_PHRASES = [
+    "scalable",
+    "robust",
+    "seamless",
+    "cutting-edge",
+    "expert in",
+    "proven ability",
+    "proven track record",
+    "skilled in",
+    "passionate",
+    "results-driven",
+    "fast-paced environment",
+    "expert",
+    "near-zero",
+    "eliminated vulnerabilities",
+    "eliminating vulnerabilities",
+] as const;
 
 const RESUME_CODE_MAP: Array<{ pattern: RegExp; code: string }> = [
     { pattern: /(frontend|front-end)/i, code: "FEND" },
@@ -225,7 +243,10 @@ async function createResumeDocxPreservingTemplate(input: {
         if (saved) return;
     }
 
-    await createResumeDocx(input.content, input.outputPath);
+    // No DOCX template to preserve (e.g. PDF/plain-text base) → render with the
+    // styled renderer, which handles section headings, bullets, and inline
+    // markdown cleanly (the old plain createResumeDocx leaked markers).
+    await createStyledResumeDocx(input.content, input.outputPath);
 }
 
 async function createResumePdfFromDocx(input: {
@@ -702,6 +723,10 @@ function formatAnalysisForPrompt(analysis: ResumeTailoringAnalysis | null): stri
     return lines.join("\n");
 }
 
+function formatBannedResumePhrases(): string {
+    return BANNED_RESUME_PHRASES.map((phrase) => `"${phrase}"`).join(", ");
+}
+
 async function loadLatestTailoringAnalysis(
     userId: string,
     jobId: string,
@@ -734,15 +759,9 @@ export function buildResumePrompt(
     const fixedRoleLabel = headerRolePart(fixedHeaderTargetLine);
 
     return `
-You are an expert technical resume strategist for software engineering roles.
-Your task is to tailor the candidate's existing resume to the target vacancy.
-
-You must optimize the resume for:
-1. ATS keyword matching
-2. Hiring manager relevance
-3. Technical credibility
-4. Role-specific positioning
-5. Truthfulness
+You are editing the candidate's resume for a specific vacancy.
+The source resume below is the only source of truth.
+Your job is to adapt emphasis for this vacancy, not to rewrite the resume creatively.
 
 ════════════════════════════════════════
 CANDIDATE SOURCE RESUME
@@ -765,33 +784,48 @@ PREVIOUS JOB FIT ANALYSIS
 ${formatAnalysisForPrompt(tailoringAnalysis)}
 
 ════════════════════════════════════════
-STRICT TRUTHFULNESS RULES
+NON-NEGOTIABLE RULES
 ════════════════════════════════════════
-- Use ONLY facts present in the candidate source resume.
-- Treat the candidate source resume as the source of truth for visual structure and style.
-- Preserve the base resume's look and feel: section order, heading style, markdown density,
-  bullet style, contact layout, experience formatting, and overall template.
-- Do NOT rewrite the resume into a different template.
+- Facts are immutable. Use ONLY facts present in the candidate source resume.
+- Never invent or restore from older versions any metric, number, technology,
+  system name, achievement, or wording that is absent from the source resume.
+- Every statement must remain defensible in a technical interview.
+- Preserve specific technical detail. If a source bullet contains a concrete
+  mechanism, tool, metric, or before/after result, keep that detail verbatim or
+  almost verbatim. Do not replace specifics with generic abstractions.
 - Edit only these content areas:
   1. Summary paragraph text.
   2. Existing Experience bullet text.
-  3. Ordering of items WITHIN existing Skills category lines (reorder comma-separated items by relevance; do not add or remove items).
+  3. Ordering of bullets within each existing experience entry.
+  4. Ordering of items WITHIN existing Skills category lines.
+- Adaptation means emphasis, not rewriting. You MAY:
+  1. Reorder bullets and skills by vacancy relevance.
+  2. Mirror vacancy terminology only where it truthfully describes source experience.
+  3. Shorten irrelevant details.
+- You must NOT rewrite bullets for freshness, smoother tone, or generic polish.
+- Prefer existing source wording whenever it already carries concrete evidence.
+- Treat the candidate source resume as the source of truth for visual structure and style.
+- Preserve section order, heading style, markdown density, bullet style, contact
+  layout, experience formatting, education order, and overall template.
 - Do NOT rename, add, or remove Skills categories or Skills category lines.
-- Do NOT edit Experience role headers, project lines, Technologies lines, Education, contact lines, languages, or section headings.
-- Do NOT add or remove experience roles.
-- Do NOT add or remove sections.
-- Do NOT add new sections that are absent from the base resume unless the section already exists
-  in the agreed base format and contains source-supported content.
+- Do NOT edit Experience role headers, project lines, Technologies lines,
+  Education, contact lines, languages, or section headings.
+- Do NOT add or remove experience roles, sections, or non-source content.
 - Do NOT invent tools, technologies, employers, responsibilities, metrics,
   project names, certificates, degrees, languages, awards, or seniority levels.
 - Do NOT add skills that are not present in the source resume.
+- Never use these phrases or close variants:
+  ${formatBannedResumePhrases()}
 - Technologies are strictly allowlisted. You may mention a technology only if it appears in this list:
   ${allowedTechnologies.length ? allowedTechnologies.join(", ") : "No explicit technologies detected in the source resume."}
 - Do NOT add job technologies that are absent from the allowlist, even if they are important ATS keywords.
 - If a job keyword is not in the allowlist, omit it and use adjacent truthful wording without naming that technology.
 - If the job requires a missing skill, do NOT pretend the candidate has it.
-- Emphasize the closest real experience only when it is genuinely supported
-  by the source resume.
+- If a required technology is present in the source resume but only weakly
+  (personal projects, coursework, or adjacent use — not production work), present
+  it honestly as familiarity, fundamentals, transferable experience, or
+  personal-project exposure. Never upgrade weak exposure into production experience.
+- Emphasize the closest real experience only when it is genuinely supported by the source resume.
 - Copy all dates EXACTLY as written.
 - Copy contact information EXACTLY as written.
 - Do not modify email, phone, LinkedIn, GitHub, location, or employer names.
@@ -807,11 +841,11 @@ Before writing the final resume, internally build a resume strategy. Do not outp
 
 Internal strategy must identify:
 1. Top hiring signals from the vacancy.
-2. Top rejection signals from the vacancy and previous fit analysis.
-3. Strong matches already supported by the source resume.
-4. Partial matches / transferable experience supported by the source resume.
-5. Missing requirements that must stay absent or be handled honestly.
-6. Sections and bullets to promote, shorten, or remove.
+2. Strong source-supported matches to move upward.
+3. Missing requirements that must stay absent.
+4. Which bullets to reorder, minimally trim, or minimally mirror.
+5. Which vacancy terms can be mirrored truthfully.
+6. What you wanted to change but must leave untouched because of the rules above.
 
 Then write the final resume.
 
@@ -822,24 +856,20 @@ Use these rules:
 - Place exact matched skills from PREVIOUS JOB FIT ANALYSIS visibly in Skills and Experience.
 - Never add missing skills from PREVIOUS JOB FIT ANALYSIS unless they appear in the source resume.
 - Reduce rejection risks by clarifying real adjacent experience, not by inventing experience.
-- Use transferable wording when truthful. Examples: SQS/SNS can support event-driven messaging relevance; ECS/Fargate can support container/cloud deployment relevance; AWS infrastructure can support cloud/platform relevance.
-- Strengthen SaaS, enterprise product, frontend architecture, API integration,
-  scalability, reliability, performance, ownership, collaboration, and product
-  impact language when supported by the source resume.
-- For frontend roles, emphasize React, TypeScript, UI architecture, reusable
-  components, responsive UI, state management, API integration, performance,
-  UX, product collaboration, and enterprise SaaS experience when supported.
-- For backend roles, emphasize Node.js, APIs, databases, auth, scalability,
-  reliability, distributed systems, cloud, observability, and production support.
-- For full-stack roles, emphasize end-to-end ownership, React + Node.js,
-  product delivery, API integration, databases, cloud, and production systems.
-- Use strong action verbs: Built, Designed, Developed, Delivered, Improved,
-  Integrated, Optimized, Owned, Collaborated, Implemented.
-- Prefer achievements and impact over generic duties.
+- Use transferable wording only when it preserves the original technical meaning.
+- For frontend roles, emphasize supported UI architecture, reusable components,
+  responsive UI, state management, API integration, performance, UX, product
+  collaboration, and enterprise SaaS experience when truly present.
+- For backend roles, emphasize supported APIs, databases, auth, reliability,
+  distributed systems, cloud, observability, and production support.
+- For full-stack roles, emphasize supported end-to-end ownership, frontend +
+  backend delivery, API integration, databases, cloud, and production systems.
+- Prefer strong source achievements and concrete mechanisms over generic duties.
 - If exact numbers are not in the source resume, do NOT invent numbers.
-- Avoid weak phrases like "responsible for" when possible.
-- Keep bullets concise, specific, and credible. Target 15–25 words per bullet. Longer is not better.
-- Each bullet must follow action → outcome: "[Strong verb] [what you did] [result or scope]".
+- Keep bullets concise, specific, and credible.
+- When you minimally edit a bullet, preserve concrete mechanisms, tool names,
+  and supported metrics nearly verbatim.
+- Do not split one source achievement into multiple inflated bullets.
 
 ATS KEYWORD RULES
 - Extract important keywords from the vacancy even if they are not in the static detected keyword list.
@@ -857,11 +887,11 @@ RESUME QUALITY RULES
   summary, Skills, and most relevant Experience bullets.
 - Put the strongest 2-3 supported achievements or high-impact contributions in
   the top third of the resume through the summary and first Experience role.
-- Prefer achievement bullets over responsibility bullets. When source metrics
-  exist, keep them. When metrics do not exist, state concrete scope, systems,
-  users, product areas, or technical outcomes without inventing numbers.
+- When source metrics exist, keep them. When metrics do not exist, state
+  concrete scope, systems, product areas, or technical outcomes without
+  inventing numbers.
 - Keep paragraphs short. The summary must be one compact paragraph; Experience
-  content must be scan-friendly bullets, not dense paragraph blocks.
+  content must remain scan-friendly bullets, not dense paragraph blocks.
 - Do not include an Objective section or objective-style wording. The header
   target line and summary replace objectives.
 - Use role and industry jargon selectively: include terms from the job posting
@@ -918,24 +948,22 @@ All non-editable lines must remain semantically and stylistically identical to t
 
 2. ## Summary
    Use the heading exactly as "## Summary".
-   Write one compact paragraph of 90–120 words immediately after the header.
-   Structure: [Role identity] + [2–3 core skills matched to this vacancy] + [strongest proof point or differentiator from real experience].
-   Start the paragraph with this exact fixed base role label: "${fixedRoleLabel}".
-   Do not replace it with the vacancy title.
+   Write one compact paragraph of maximum 3 sentences immediately after the header.
+   Sentence 1 must start with this exact fixed base role label: "${fixedRoleLabel}" and include years of experience if the source resume supports them.
+   Sentence 2 should name 3-4 most relevant competencies for this vacancy using only source-supported wording.
+   Sentence 3 should show ownership, scope, or the strongest supported differentiator from the source resume.
+   Do not replace the fixed base role label with the vacancy title.
    Do not prepend seniority such as "Senior", "Principal", "Lead", or "Junior" unless it is already part of the fixed base role label.
-   Match the vacancy direction through supported keywords and bullet emphasis, not by changing the fixed role label.
-   Must emphasize supported experience relevant to this exact vacancy.
-   If the source resume contains concrete metrics (scale, users, performance gains, reliability improvements), lead with the strongest one.
+   Match the vacancy direction through supported keywords and bullet emphasis, not by changing the fixed base role label.
    The summary must be consistent with the target title line and Skills section.
-   Do not use phrases like "I am passionate about" or "responsible for" — every sentence must assert a capability or outcome.
+   Do not use phrases like "I am passionate about", "responsible for", or any banned stock language.
    CRITICAL: Do NOT mention any technology or keyword in the Summary unless it also appears in the Skills section. ATS systems flag keywords that appear in Summary but are missing from Skills — this causes automatic score deductions.
 
 3. ## Skills
    Preserve all Skills category names and lines exactly as in the source resume.
    Do not add, remove, or rename any Skills category.
    You MAY reorder the comma-separated items within each existing Skills line to place the
-   most vacancy-relevant technologies first — this is an ATS best practice (73% of recruiters
-   scan skills before work history). Do not add items that are not already in the source resume.
+   most vacancy-relevant technologies first. Do not add items that are not already in the source resume.
    If an ATS keyword is not already represented in Skills, do not force it into Skills.
    Instead, use only source-supported wording in Summary or existing Experience bullets.
    Skills category guidance for this vacancy:
@@ -944,7 +972,9 @@ All non-editable lines must remain semantically and stylistically identical to t
 4. ## Experience
    Reverse chronological.
    Preserve existing role headers, project lines, Technologies lines, and role order from the source resume.
-   Rewrite only bullet text to improve ATS alignment while staying factual.
+   Reorder bullets by vacancy relevance before rewriting anything.
+   Rewrite only bullet text when needed to improve ATS alignment while staying factual.
+   Minimal edits only: preserve concrete mechanisms, names, and supported metrics nearly verbatim.
    For each position:
    ### YYYY – YYYY | Job Title | Company (Location)
    Project name line when present in the source resume.
@@ -976,6 +1006,14 @@ All non-editable lines must remain semantically and stylistically identical to t
 Do not include a separate Languages section because languages belong in the header.
 If the base resume uses slightly different spacing or markdown conventions, prefer the base resume style
 as long as the required sections remain readable.
+
+SELF-CHECK BEFORE FINALIZING
+- Confirm there are no duplicated or near-duplicated bullets.
+- Confirm every promoted technology in Summary and top bullets is supported by Skills and source experience.
+- Confirm no claims were introduced that are absent from the source resume.
+- Confirm none of the banned phrases or close variants appear.
+- Internally note what you reordered, shortened, and mirrored, and what you refused to change because of the rules above.
+- Do NOT output that internal report because the system stores your reply as the final resume document.
 
 Return ONLY the final tailored resume in Markdown.
 Do NOT include analysis, explanations, comments, JSON, code fences, or preamble.
@@ -1081,7 +1119,7 @@ async function callOpenAIForText(
             {
                 role: "system",
                 content:
-                    "You are a precise technical career assistant. You optimize resumes truthfully and never invent candidate experience.",
+                    "You are a precise technical career assistant. The provided base resume is the only source of truth. Never invent experience, never restore removed claims, never replace concrete technical details with generic wording, and never use cliche resume language.",
             },
             { role: "user", content: prompt },
         ],
@@ -1322,6 +1360,35 @@ function extractGeneratedExperienceByRole(content: string): string[][] {
     return perRole;
 }
 
+/**
+ * Extract "concrete" tokens from a bullet — the specific evidence a resume lives
+ * or dies on: technology names (DynamoDB, SQS, PostgreSQL), acronyms (JWT, RBAC,
+ * IoT, TTL, CI/CD), mechanism words (idempotency, transactional, projection…),
+ * and metrics (~40%, 8s, 10,000). Generic verbs and filler are ignored.
+ */
+function concreteTokens(text: string): Set<string> {
+    const tokens = new Set<string>();
+    // camel/PascalCase and multi-cap tech names: DynamoDB, TanStack, CloudWatch, GitHub
+    for (const m of text.matchAll(/\b[A-Za-z][a-z0-9]*[A-Z][A-Za-z0-9]*\b/g)) tokens.add(m[0].toLowerCase());
+    // ALL-CAPS acronyms: SQS, SNS, JWT, RBAC, TTL, API, AWS
+    for (const m of text.matchAll(/\b[A-Z]{2,}\b/g)) tokens.add(m[0].toLowerCase());
+    // numbers / metrics: ~40%, 8s, 2s, 10,000, 45 min
+    for (const m of text.matchAll(/~?\d[\d,]*(?:\.\d+)?\s*(?:%|s\b|min\b|k\b|hrs\b|events\b)?/g)) {
+        const v = m[0].replace(/\s+/g, "").toLowerCase();
+        if (/\d/.test(v)) tokens.add(v);
+    }
+    // specific mechanism vocabulary (lowercase words that carry technical meaning)
+    const MECH = /\b(idempotency|idempotent|transactional|conditional|projection|cache|ttl|rollback|migration|dedup|deduplication|backpressure|concurrency|race|checkout|webhook|refresh|rotation|pipeline|aggregation|indexes?|cascade|middleware|validation)\b/gi;
+    for (const m of text.matchAll(MECH)) tokens.add(m[0].toLowerCase());
+    return tokens;
+}
+
+function unionConcrete(bullets: string[]): Set<string> {
+    const all = new Set<string>();
+    for (const b of bullets) for (const t of concreteTokens(b)) all.add(t);
+    return all;
+}
+
 function replaceExperienceBulletsByRole(
     baseLines: string[],
     generatedByRole: string[][],
@@ -1344,6 +1411,28 @@ function replaceExperienceBulletsByRole(
     for (let r = 0; r < roleCount; r += 1) {
         const block = baseBlocks[r];
         const generatedBullets = generatedByRole[r];
+
+        // Concrete-detail guard: if the generated bullets for this role dropped
+        // the base role's specific evidence (tech/mechanisms/metrics), the LLM
+        // genericised the role — keep the stronger base bullets instead of the
+        // washed-out rewrite. Bullets may be reordered, so compare at role level.
+        const baseBullets = block.editableSlotIndices
+            .map((i) => bulletText(baseLines[i] ?? ""))
+            .filter(Boolean);
+        const baseConcrete = unionConcrete(baseBullets);
+        if (baseConcrete.size >= 3) {
+            const genConcrete = unionConcrete(generatedBullets);
+            let lost = 0;
+            for (const t of baseConcrete) if (!genConcrete.has(t)) lost += 1;
+            const lostRatio = lost / baseConcrete.size;
+            if (lost >= 3 || lostRatio > 0.3) {
+                logger.warn(
+                    { role: r, lost, baseConcrete: baseConcrete.size, lostRatio: Number(lostRatio.toFixed(2)) },
+                    "[generation] Generated role dropped concrete detail; keeping base bullets",
+                );
+                continue; // leave base bullets untouched for this role
+            }
+        }
 
         block.editableSlotIndices.forEach((lineIndex, slot) => {
             const nextBullet = generatedBullets[slot];
@@ -1429,15 +1518,23 @@ ${listOrFallback(ats.missingImportantKeywords, "No missing important keywords de
 REPAIR RULES
 ════════════════════════════════════════
 - Use ONLY facts present in the candidate source resume or already truthfully present in the current resume.
+- Facts are immutable. Never invent or restore removed metrics, technologies,
+  systems, achievements, or phrasing absent from the source resume.
+- Preserve concrete technical detail. If a bullet already contains a specific
+  mechanism, tool, or metric, keep it verbatim or almost verbatim.
 - Preserve the base resume's visual structure and style. Do not redesign the template.
-- Keep section order, heading style, contact layout, bullet style, and experience formatting aligned with the source resume.
+- Keep section order, heading style, contact layout, bullet style, experience
+  formatting, education order, and template aligned with the source resume.
 - Edit only these content areas:
   1. Summary paragraph text.
   2. Existing Experience bullet text.
-  3. Ordering of items WITHIN existing Skills category lines (reorder comma-separated items by relevance; do not add or remove items).
+  3. Ordering of bullets within each existing experience entry.
+  4. Ordering of items WITHIN existing Skills category lines.
 - Do NOT rename, add, or remove Skills categories or Skills category lines.
 - Do NOT edit Experience headers, project lines, Technologies lines, Education, contact lines, languages, or section headings.
 - Do NOT invent tools, metrics, responsibilities, employers, titles, seniority, education, or dates.
+- Do NOT use these phrases or close variants:
+  ${formatBannedResumePhrases()}
 - Do NOT change the header title/role line. It must remain exactly:
   ${fixedHeaderTargetLine}
 - The Summary must start with this same fixed base role label:
@@ -1450,11 +1547,24 @@ REPAIR RULES
   and Experience bullet support for listed Technologies.
 - Add a missing job keyword only if it is clearly supported by the candidate source resume.
 - If a missing keyword is not supported, do not add it.
-- Keep bullets concise: target 15–25 words per bullet, action → outcome format.
+- If a required technology exists in the source only weakly (personal project,
+  coursework, adjacent use), present it as familiarity / transferable experience /
+  personal-project exposure — never as production experience.
+- Reorder bullets by vacancy relevance before rewriting anything.
+- NEVER replace a concrete bullet (with specific tech, mechanism, or metric) with
+  a generic keyword-oriented sentence. Chasing ATS keywords must not wash out
+  concrete evidence. When in doubt, keep the source wording.
+- Minimal edits only: preserve concrete mechanisms, names, and supported metrics nearly verbatim.
+- Summary must be one compact paragraph of maximum 3 sentences.
 - Keep the same compact resume format.
 - Preserve contact details exactly.
 Skills category guidance for this vacancy:
 ${buildSkillsSectionGuidance(job)}
+- Self-check before finalizing:
+  1. No duplicated bullets.
+  2. No unsupported claims.
+  3. No banned phrases.
+  4. No technology in Summary that is absent from Skills.
 - Return ONLY the repaired resume in the same format as the current generated resume.
 `.trim();
 }
@@ -1659,7 +1769,7 @@ async function recordAtsValidationEvent(
         );
     });
 
-    const failed = ats.score < ATS_RESUME_MIN_SCORE || ats.issues.length > 0;
+    const failed = ats.qualityScore < ATS_RESUME_MIN_SCORE || ats.issues.length > 0;
     if (failed) {
         logger.warn(
             { ...metadata, userId },
@@ -1674,16 +1784,64 @@ async function recordAtsValidationEvent(
 }
 
 function isAtsPassing(ats: ReturnType<typeof validateResumeAgainstJob>) {
-    return ats.score >= ATS_RESUME_MIN_SCORE && ats.issues.length === 0;
+    // Gate on resume QUALITY (fixable consistency), not the fit-weighted score.
+    // A low fit score from genuinely missing requirements (e.g. Java) is not
+    // something the repair loop can honestly fix, so it must not trigger rewrites.
+    return ats.qualityScore >= ATS_RESUME_MIN_SCORE && ats.issues.length === 0;
 }
 
 function isBetterAtsResult(
     candidate: ReturnType<typeof validateResumeAgainstJob>,
     current: ReturnType<typeof validateResumeAgainstJob>,
 ) {
-    if (candidate.score !== current.score) return candidate.score > current.score;
+    // Prefer fewer structural issues, then higher quality, then better keyword
+    // coverage — quality first so repair converges on a consistent resume.
     if (candidate.issues.length !== current.issues.length) return candidate.issues.length < current.issues.length;
-    return candidate.missingImportantKeywords.length < current.missingImportantKeywords.length;
+    if (candidate.qualityScore !== current.qualityScore) return candidate.qualityScore > current.qualityScore;
+    return candidate.score > current.score;
+}
+
+/**
+ * Remove near-duplicate bullets within the same experience/project block. The
+ * skeleton-merge can emit two phrasings of the same achievement (one echoed from
+ * the base, one freshly generated). We drop the later one when its word set
+ * overlaps an earlier kept line by >60% (Jaccard). The threshold is conservative
+ * — distinct bullets in a clean resume overlap well below it, so they are kept.
+ */
+function dedupeResumeBullets(content: string): string {
+    const SECTIONS = new Set(["SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION", "LANGUAGES", "PERSONAL PROJECTS"]);
+    const bulletRe = /^[•\-*●]\s+/;
+    const isHeading = (s: string) => SECTIONS.has(s.replace(/^#+\s*/, "").trim().toUpperCase());
+    const words = (s: string) => new Set(
+        s.replace(bulletRe, "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 3),
+    );
+
+    const out: string[] = [];
+    let kept: Set<string>[] = [];
+    for (const line of content.split("\n")) {
+        const t = line.trim();
+        // Reset the dedup window at each section heading and each job/project header.
+        if (!t) {
+            out.push(line);
+            continue;
+        }
+        if (isHeading(t) || /\|/.test(t) || /^Technologies:/i.test(t)) {
+            out.push(line);
+            kept = [];
+            continue;
+        }
+        const w = words(t);
+        if (w.size === 0) { out.push(line); continue; }
+        const dup = kept.some((k) => {
+            const inter = [...w].filter((x) => k.has(x)).length;
+            const uni = new Set([...w, ...k]).size || 1;
+            return inter / uni > 0.6;
+        });
+        if (dup) continue;
+        kept.push(w);
+        out.push(line);
+    }
+    return out.join("\n");
 }
 
 async function finalizeResumeContent(
@@ -1744,7 +1902,7 @@ async function finalizeResumeContent(
     }
 
     return {
-        content: bestContent,
+        content: dedupeResumeBullets(bestContent),
         atsScore: bestAts.score,
         atsIssues: bestAts.issues,
         atsMatchedKeywords: bestAts.matchedKeywords,
@@ -1890,7 +2048,11 @@ export async function regenerateResumeVersion(
         await assertUserLimit(existing.userId, "OPENAI_TOKENS");
     }
 
-    const selectedBaseId = options.resumeBaseIds
+    // Mirror generateResumeForJob: when resumeBaseId is omitted, infer the
+    // correct base from the vacancy instead of silently falling back to the
+    // user's default resume (which can produce full-stack headers for
+    // backend/frontend jobs during regeneration).
+    const selectedBaseId = (options.resumeBaseIds || !options.resumeBaseId)
         ? (await selectResumeBaseForJob(existing.userId, existing.job, options.resumeBaseId, options.resumeBaseIds)).id
         : options.resumeBaseId;
     const profile = await getWorkspaceCandidateProfile(existing.userId, selectedBaseId);

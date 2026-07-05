@@ -5,7 +5,7 @@ import { collectJobsFromEmailLinks } from "./email-link-job-collector.service";
 import { generateCoverLetterForJob, generateResumeForJob } from "./resume-generator.service";
 import { runEmailReport } from "./email-report.service";
 import { listAppliedVacancies } from "./applied-vacancy.service";
-import { sendTelegramMessage } from "./telegram.service";
+import { sendTelegramMessageToUser } from "./telegram.service";
 import { analyzeJob } from "./job-analyzer.service";
 import { selectResumeBaseForJob } from "./resume-base-selector.service";
 import type { ResumeBaseSelectionMap } from "./resume-base-selector.service";
@@ -312,28 +312,28 @@ export async function runJobAutomationWorkflowWithSource(options: {
     const selectedResumeBaseIds = new Map<string, string>();
     const requiredMatchScore = preferences.minMatchScore ?? REQUIRED_MATCH_SCORE;
     const collectedAt = new Date();
-    startAutomationProgress(5);
+    startAutomationProgress(userId, 5);
 
     try {
         await assertUserLimit(userId, "SEARCH_RUN");
         await recordUsageEvent(userId, "SEARCH_RUN", 1, { sourceMode, searchLocation });
 
         const emailReport = sourceMode === "EMAIL"
-            ? (updateAutomationProgress({
+            ? (updateAutomationProgress(userId, {
                 stage: "Email report",
                 message: "Reading email report...",
                 percent: 5,
                 currentStep: 1,
-            }), await runEmailReport(userId))
+            }), await runEmailReport(userId, preferences.gmailScanDays))
             : emptyEmailReport();
 
         const rawEmailLinkJobs = sourceMode === "EMAIL"
-            ? (updateAutomationProgress({
+            ? (updateAutomationProgress(userId, {
                 stage: "Email links",
                 message: "Collecting jobs from email links...",
                 percent: 15,
                 currentStep: 2,
-            }), await collectJobsFromEmailLinks(userId))
+            }), await collectJobsFromEmailLinks(userId, preferences.gmailScanDays))
             : [];
         const { jobs: emailLinkJobs, stats: emailPreferenceStats } = filterJobsBySearchPreferences(rawEmailLinkJobs, preferences);
 
@@ -343,7 +343,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
         console.log(`╚════════════════════════════════════════════════════════╝`);
         console.log(`[Job Automation] Starting job collection (${sourceMode})...`);
 
-        updateAutomationProgress({
+        updateAutomationProgress(userId, {
             stage: sourceMode === "EMAIL" ? "Email links" : "Collecting",
             message: sourceMode === "EMAIL"
                 ? "Collecting jobs from email links..."
@@ -376,6 +376,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
             input: emailPreferenceStats.input + (providerPreferenceStats?.input ?? 0),
             output: emailPreferenceStats.output + (providerPreferenceStats?.output ?? 0),
             excludedKeyword: emailPreferenceStats.excludedKeyword + (providerPreferenceStats?.excludedKeyword ?? 0),
+            titleStopword: emailPreferenceStats.titleStopword + (providerPreferenceStats?.titleStopword ?? 0),
             targetRole: emailPreferenceStats.targetRole + (providerPreferenceStats?.targetRole ?? 0),
             targetLocation: emailPreferenceStats.targetLocation + (providerPreferenceStats?.targetLocation ?? 0),
             requiredTech: emailPreferenceStats.requiredTech + (providerPreferenceStats?.requiredTech ?? 0),
@@ -403,7 +404,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
         // ПАРАЛЛЕЛЬНЫЙ АНАЛИЗ
         console.log(`\n[Job Automation] Starting parallel analysis of ${newJobs.length} jobs (concurrency: ${ANALYSIS_CONCURRENCY})...`);
 
-        updateAutomationProgress({
+        updateAutomationProgress(userId, {
             stage: "Analyzing",
             message: `Starting parallel analysis of ${newJobs.length} jobs...`,
             percent: 30,
@@ -411,7 +412,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
         });
 
         const analysisProcessor = async (job: Job, index: number): Promise<AnalyzedJob> => {
-            updateAutomationProgress({
+            updateAutomationProgress(userId, {
                 stage: "Analyzing",
                 message: `Analyzing ${index + 1}/${newJobs.length}: ${job.title}`,
                 percent: 30 + Math.round((index / Math.max(newJobs.length, 1)) * 35),
@@ -448,7 +449,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
             analysisProcessor,
             ANALYSIS_CONCURRENCY,
             (processed, total) => {
-                updateAutomationProgress({
+                updateAutomationProgress(userId, {
                     stage: "Analyzing",
                     message: `Analyzed ${processed}/${total} jobs`,
                     percent: 30 + Math.round((processed / total) * 35),
@@ -464,7 +465,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
         // ПАРАЛЛЕЛЬНАЯ ГЕНЕРАЦИЯ
         console.log(`\n[Job Automation] Starting parallel resume generation (concurrency: ${GENERATION_CONCURRENCY})...`);
 
-        updateAutomationProgress({
+        updateAutomationProgress(userId, {
             stage: "Generating",
             message: "Starting parallel resume generation...",
             percent: 65,
@@ -493,7 +494,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
         }));
 
         const generationProcessor = async (job: AnalyzedJob, index: number): Promise<{ resume: GeneratedResume; coverLetter: GeneratedCoverLetter }> => {
-            updateAutomationProgress({
+            updateAutomationProgress(userId, {
                 stage: "Generating",
                 message: `Generating ${index + 1}/${jobsToGenerate.length}: ${job.title}`,
                 percent: 65 + Math.round((index / Math.max(jobsToGenerate.length, 1)) * 20),
@@ -520,7 +521,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
             generationProcessor,
             GENERATION_CONCURRENCY,
             (processed, total) => {
-                updateAutomationProgress({
+                updateAutomationProgress(userId, {
                     stage: "Generating",
                     message: `Generated ${processed}/${total} resumes`,
                     percent: 65 + Math.round((processed / total) * 20),
@@ -536,7 +537,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
             error: e.error
         }));
 
-        updateAutomationProgress({
+        updateAutomationProgress(userId, {
             stage: "Follow-up",
             message: "Building follow-up summary...",
             percent: 88,
@@ -578,7 +579,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
             followUp,
         );
 
-        updateAutomationProgress({
+        updateAutomationProgress(userId, {
             stage: "Notification",
             message: "Sending Telegram notification...",
             percent: 94,
@@ -586,7 +587,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
         });
 
         console.log(`\n[Job Automation] Sending Telegram notification...`);
-        const telegramSent = await sendTelegramMessage(message);
+        const telegramSent = await sendTelegramMessageToUser(userId, message);
         if (telegramSent) {
             console.log(`[Job Automation] ✓ Telegram notification sent successfully`);
         } else {
@@ -606,7 +607,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
         console.log(`║ Follow-up: ${followUp.needsReply.length} need reply, ${followUp.answered.length} answered`);
         console.log(`╚════════════════════════════════════════════════════════╝\n`);
 
-        finishAutomationProgress("Workflow finished.");
+        finishAutomationProgress(userId, "Workflow finished.");
 
         return {
             collectedAt,
@@ -628,7 +629,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
             } : undefined,
         };
     } catch (error) {
-        failAutomationProgress(error instanceof Error ? error.message : "Automation failed.");
+        failAutomationProgress(userId, error instanceof Error ? error.message : "Automation failed.");
         throw error;
     }
 }

@@ -3,7 +3,7 @@ import { requiredParam } from "./request-params";
 import { requireAuthUser, requireUserIdFromRequest } from "../middleware/auth.middleware";
 import { analyzeJob } from "../services/job-analyzer.service";
 import { runJobAutomationWorkflowWithSource } from "../services/job-automation.service";
-import { getAutomationProgress } from "../services/job-automation-progress.service";
+import { getAutomationProgress, isAutomationRunning } from "../services/job-automation-progress.service";
 import { runDailyJobReport } from "../services/daily-job-report.service";
 import {
     generateApplicationPackageForJob,
@@ -93,6 +93,12 @@ export async function sendTelegramNotification(req: Request, res: Response) {
 export async function runAutomation(req: Request, res: Response) {
     const body = automationRunSchema.parse(req.body ?? {});
     const userId = await requireUserIdFromRequest(req, body.userId);
+
+    if (isAutomationRunning(userId)) {
+        res.status(409).json({ success: false, message: "Automation is already running for this user. Please wait for it to finish." });
+        return;
+    }
+
     const report = await runJobAutomationWorkflowWithSource({
         userId,
         searchLocation: body.searchLocation,
@@ -128,10 +134,13 @@ export async function runAutomation(req: Request, res: Response) {
 }
 
 export async function getAutomationStatus(req: Request, res: Response) {
-    await requireAuthUser(req);
+    const userId = await requireUserIdFromRequest(
+        req,
+        typeof req.query.userId === "string" ? req.query.userId : undefined,
+    );
     res.json({
         success: true,
-        progress: getAutomationProgress(),
+        progress: getAutomationProgress(userId),
     });
 }
 

@@ -1,14 +1,14 @@
 import { prisma } from "../infrastructure/prisma";
 import { extractDescription, createProviderBrowser, newProviderPage, cleanJobTitle, filterRelevantJobs } from "../providers/browser-provider-utils";
 import { ParsedJob } from "../providers/types";
-import { createJobIfNew, normalizeJobUrl } from "./job-deduplication.service";
+import { createJobIfNew, findDuplicateJob, normalizeJobUrl } from "./job-deduplication.service";
 import { extractUrls } from "./email-report.service";
 import { updateAutomationProgress } from "./job-automation-progress.service";
 
 type EmailEvent = Awaited<ReturnType<typeof prisma.emailEvent.findMany>>[number];
 
-function reportLookbackDate(): Date {
-    return new Date(Date.now() - 24 * 60 * 60 * 1000);
+function reportLookbackDate(days = 1): Date {
+    return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 }
 
 function readRawText(event: EmailEvent): string {
@@ -155,14 +155,14 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
     });
 }
 
-export async function collectJobsFromEmailLinks(userId: string): Promise<Array<Awaited<ReturnType<typeof createJobIfNew>>["job"]>> {
+export async function collectJobsFromEmailLinks(userId: string, gmailScanDays?: number): Promise<Array<Awaited<ReturnType<typeof createJobIfNew>>["job"]>> {
     const limit = Number(process.env.EMAIL_LINK_HISTORY_LIMIT ?? 200);
     const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 200;
     const events = await prisma.emailEvent.findMany({
         where: {
             userId,
             emailTs: {
-                gte: reportLookbackDate(),
+                gte: reportLookbackDate(gmailScanDays),
             },
         },
         orderBy: {
@@ -190,12 +190,15 @@ export async function collectJobsFromEmailLinks(userId: string): Promise<Array<A
 
     for (let index = 0; index < urlList.length; index++) {
         const url = urlList[index];
-        updateAutomationProgress({
+        updateAutomationProgress(userId, {
             stage: "Email links",
             message: `Inspecting email link ${index + 1}/${urlList.length}`,
             percent: 15 + Math.round((index / Math.max(urlList.length, 1)) * 10),
             currentStep: 2,
         });
+
+        const existingByUrl = await findDuplicateJob({ url, title: "", description: "" });
+        if (existingByUrl) continue;
 
         const job = await withTimeout(inspectJobLink(url), Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30000, url);
         if (!job) continue;

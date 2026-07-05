@@ -1,6 +1,6 @@
 import { Job } from "@prisma/client";
 import { collectJobs } from "./job-collector.service";
-import { sendTelegramMessage } from "./telegram.service";
+import { sendTelegramMessageToUser } from "./telegram.service";
 import { runEmailReport } from "./email-report.service";
 
 type DailyJobReport = {
@@ -80,7 +80,7 @@ export async function runDailyJobReport(userId: string): Promise<DailyJobReport>
     const newJobs = await collectJobs({ userId });
     const emailReport = await runEmailReport(userId);
     const message = buildDailyJobReportMessage(newJobs, emailReport.message, collectedAt);
-    const telegramSent = await sendTelegramMessage(message);
+    const telegramSent = await sendTelegramMessageToUser(userId, message);
 
     return {
         collectedAt,

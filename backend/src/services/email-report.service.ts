@@ -283,14 +283,24 @@ async function saveEmailEvent(userId: string, message: ParsedGmailMessage): Prom
     };
 }
 
-async function syncEmailEvents(userId: string): Promise<{
+function gmailAfterFilter(days?: number): string {
+    if (!days || !Number.isFinite(days) || days <= 0) return "";
+    const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const yyyy = date.getUTCFullYear();
+    const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(date.getUTCDate()).padStart(2, "0");
+    return ` after:${yyyy}/${mm}/${dd}`;
+}
+
+async function syncEmailEvents(userId: string, gmailScanDays?: number): Promise<{
     syncedCount: number;
     newEventsCount: number;
 }> {
+    const afterFilter = gmailAfterFilter(gmailScanDays);
     const queries = [
-        process.env.EMAIL_JOB_ALERT_QUERY ?? DEFAULT_JOB_ALERT_QUERY,
-        process.env.EMAIL_APPLICATION_RESPONSE_QUERY ?? DEFAULT_APPLICATION_QUERY,
-        process.env.EMAIL_SENT_APPLICATION_QUERY ?? '(in:sent (resume OR cv OR "cover letter" OR application OR applied OR "my candidacy")) -in:spam -in:trash',
+        (process.env.EMAIL_JOB_ALERT_QUERY ?? DEFAULT_JOB_ALERT_QUERY) + afterFilter,
+        (process.env.EMAIL_APPLICATION_RESPONSE_QUERY ?? DEFAULT_APPLICATION_QUERY) + afterFilter,
+        '(in:sent (resume OR cv OR "cover letter" OR application OR applied OR "my candidacy")) -in:spam -in:trash' + afterFilter,
     ];
     const existingEvents = await prisma.emailEvent.findMany({
         where: { userId },
@@ -308,7 +318,7 @@ async function syncEmailEvents(userId: string): Promise<{
                 ? "application responses"
                 : "sent applications";
 
-        updateAutomationProgress({
+        updateAutomationProgress(userId, {
             stage: "Email report",
             message: `Scanning Gmail ${label} (${queryIndex + 1}/${queries.length})...`,
             percent: 5 + queryIndex * 3,
@@ -316,7 +326,7 @@ async function syncEmailEvents(userId: string): Promise<{
         });
 
         const messages = await searchGmailMessagesForUser(userId, query, undefined, (progress) => {
-            updateAutomationProgress({
+            updateAutomationProgress(userId, {
                 stage: "Email report",
                 message: progress.done
                     ? `Finished Gmail ${label}: ${progress.fetchedMessages} new, ${progress.skippedMessages} already synced.`
@@ -405,7 +415,7 @@ export function buildEmailReportSection(events: EmailEvent[]): string {
     ].join("\n");
 }
 
-export async function runEmailReport(userId: string): Promise<EmailReport> {
+export async function runEmailReport(userId: string, gmailScanDays?: number): Promise<EmailReport> {
     const enabled = process.env.EMAIL_REPORT_ENABLED !== "false";
     const configured = await isGmailConfigured(userId);
 
@@ -430,7 +440,7 @@ export async function runEmailReport(userId: string): Promise<EmailReport> {
     let syncErrorMessage: string | undefined;
 
     try {
-        syncResult = await syncEmailEvents(userId);
+        syncResult = await syncEmailEvents(userId, gmailScanDays);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         syncErrorMessage = /invalid_grant|expired|revoked/i.test(message)
@@ -439,9 +449,11 @@ export async function runEmailReport(userId: string): Promise<EmailReport> {
     }
 
     const appliedHistory = await syncAppliedVacancyHistory(userId);
+    const lookbackDate = gmailScanDays ? new Date(Date.now() - gmailScanDays * 24 * 60 * 60 * 1000) : undefined;
     const events = await prisma.emailEvent.findMany({
         where: {
             userId,
+            ...(lookbackDate ? { emailTs: { gte: lookbackDate } } : {}),
         },
         orderBy: [
             { emailTs: "desc" },
