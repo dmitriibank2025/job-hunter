@@ -23,6 +23,7 @@ storage/
 .DS_Store
 .idea/
 .vscode/
+.pnpm-store/
 
 # Logs and temporary files
 *.log
@@ -53,3 +54,4 @@ TECHNICAL_ARCHITECTURE.md
 WORKFLOW_FINAL.md
 WORKFLOW_VERIFICATION.md
 НОВАЯ_СИСТЕМА_README.md
+!/backend/backup.sql

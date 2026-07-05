@@ -4,6 +4,7 @@ import path from "path";
 import { chromium, BrowserContext, Page } from "playwright";
 import { prisma } from "../infrastructure/prisma";
 import { ensureDir, getStorageRoot } from "./file-storage.service";
+import { isRemoteViewEnabled, startRemoteBrowserSession, RemoteBrowserSession } from "./remote-browser.service";
 
 const LINKEDIN_LOGIN_URL = "https://www.linkedin.com/login";
 const LINKEDIN_AUTH_TIMEOUT_MS = Number(process.env.LINKEDIN_AUTH_TIMEOUT_MS ?? 300_000);
@@ -25,6 +26,8 @@ type PendingConnection = {
     startedAt: Date;
     completedAt?: Date;
     error?: string;
+    viewUrl?: string;
+    remoteSession?: RemoteBrowserSession;
 };
 
 const pendingConnections = new Map<string, PendingConnection>();
@@ -106,12 +109,22 @@ async function extractLinkedInIdentity(page: Page) {
     };
 }
 
-async function createLinkedInLoginContext(userId: string): Promise<BrowserContext> {
+async function createLinkedInLoginContext(userId: string, display?: string): Promise<BrowserContext> {
     const profileRoot = path.join(getStorageRoot(), "linkedin_profile", userId.replace(/[^a-zA-Z0-9_-]/g, "_"));
     await ensureDir(profileRoot);
 
+    // Remove stale Chromium singleton locks left by a browser that didn't exit
+    // cleanly (e.g. a previous interrupted/timed-out connect). Without this the
+    // next launch fails with "profile appears to be in use".
+    for (const lock of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+        await fs.rm(path.join(profileRoot, lock), { force: true }).catch(() => undefined);
+    }
+
     const launchOptions = {
-        headless: LINKEDIN_HEADLESS_CONNECT,
+        // When a remote display is provided we must run headful so the user can
+        // see and interact with the page over noVNC.
+        headless: display ? false : LINKEDIN_HEADLESS_CONNECT,
+        env: display ? { ...process.env, DISPLAY: display } : undefined,
         channel: LINKEDIN_CONNECT_BROWSER_CHANNEL,
         viewport: { width: 1440, height: 1100 },
         userAgent:
@@ -120,6 +133,9 @@ async function createLinkedInLoginContext(userId: string): Promise<BrowserContex
         args: [
             "--disable-blink-features=AutomationControlled",
             "--disable-dev-shm-usage",
+            // Required when Chromium runs as root inside a container.
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
         ],
         ignoreDefaultArgs: ["--enable-automation"],
     } satisfies Parameters<typeof chromium.launchPersistentContext>[1];
@@ -150,15 +166,45 @@ async function runConnectionWatcher(connectionId: string) {
         const absolutePath = resolveLinkedInStorageStatePath(connection.storageStatePath);
         await ensureDir(path.dirname(absolutePath));
 
-        context = await createLinkedInLoginContext(connection.userId);
+        const remoteDisplay = connection.remoteSession?.display;
+        context = await createLinkedInLoginContext(connection.userId, remoteDisplay);
         await context.addInitScript(() => {
             Object.defineProperty(navigator, "webdriver", { get: () => undefined });
         });
         const page = await context.newPage();
 
         await page.goto(LINKEDIN_LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+
+        if (remoteDisplay) {
+            // Remote-view mode: the user logs in manually through the noVNC window
+            // (their own account, including 2FA/captcha). Nothing to auto-fill.
+        } else {
+            // Headless/local fallback: auto-fill credentials when provided.
+            const email = process.env.LINKEDIN_EMAIL;
+            const password = process.env.LINKEDIN_PASSWORD;
+            if (email && password) {
+                await page.fill("#username", email).catch(() => undefined);
+                await page.fill("#password", password).catch(() => undefined);
+                await page.click('button[type="submit"]').catch(() => undefined);
+            } else if (LINKEDIN_HEADLESS_CONNECT) {
+                throw new Error(
+                    "LinkedIn login requires a remote view (LINKEDIN_REMOTE_VIEW=true) or " +
+                    "LINKEDIN_EMAIL/LINKEDIN_PASSWORD when running headless (Docker).",
+                );
+            }
+        }
+
+        // After submit LinkedIn may present a checkpoint/2FA (e.g. email/SMS code or
+        // a captcha). We wait for the post-login URL; if a checkpoint blocks it, this
+        // times out and the connection is reported as FAILED with the reason below.
         await page.waitForURL(/\/feed|\/jobs|\/mynetwork|\/in\//, {
             timeout: LINKEDIN_AUTH_TIMEOUT_MS,
+        }).catch(() => {
+            throw new Error(
+                "LinkedIn login did not complete. This usually means a verification " +
+                "challenge (2FA / email code / captcha) was required. Resolve it once on a " +
+                "headful machine and reuse the saved session, or complete the challenge and retry.",
+            );
         });
         await context.storageState({ path: absolutePath });
 
@@ -191,6 +237,8 @@ async function runConnectionWatcher(connectionId: string) {
         console.error("[LinkedIn] connect failed:", error);
     } finally {
         await context?.close().catch(() => undefined);
+        // Always tear down the remote display/VNC/noVNC processes when done.
+        await connection.remoteSession?.stop().catch(() => undefined);
     }
 }
 
@@ -205,6 +253,7 @@ export async function startLinkedInConnection(userId: string) {
         return {
             connectionId: existingPending.id,
             storageStatePath: existingPending.storageStatePath,
+            viewUrl: existingPending.viewUrl,
         };
     }
 
@@ -213,19 +262,30 @@ export async function startLinkedInConnection(userId: string) {
 
     validateLinkedInStorageStatePath(storageStatePath);
 
-    pendingConnections.set(connectionId, {
+    const connection: PendingConnection = {
         id: connectionId,
         userId,
         storageStatePath,
         status: "PENDING",
         startedAt: new Date(),
-    });
+    };
+
+    // In remote-view mode, start the noVNC session up front so the response can
+    // hand the frontend a viewUrl to open immediately.
+    if (isRemoteViewEnabled()) {
+        const session = await startRemoteBrowserSession();
+        connection.remoteSession = session;
+        connection.viewUrl = session.viewUrl;
+    }
+
+    pendingConnections.set(connectionId, connection);
 
     void runConnectionWatcher(connectionId);
 
     return {
         connectionId,
         storageStatePath,
+        viewUrl: connection.viewUrl,
     };
 }
 
@@ -247,6 +307,7 @@ export async function getLinkedInConnectionStatus(userId: string, connectionId?:
         connectionId: pending?.id,
         connectionStatus: pending?.status,
         error: pending?.error,
+        viewUrl: pending?.viewUrl,
     };
 }
 

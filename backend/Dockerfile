@@ -8,6 +8,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     openssl ca-certificates wget \
     libreoffice-writer fonts-dejavu-core fonts-liberation \
+    xvfb x11vnc novnc websockify \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -34,4 +35,8 @@ RUN pnpm build
 
 EXPOSE 4000
 
-CMD ["sh", "-c", "pnpm prisma migrate deploy && pnpm start"]
+# Migrations are intentionally NOT run here.
+# Run them before deploying via:
+#   docker run --rm <image> sh -c "pnpm prisma migrate deploy"
+# or use the migrate service in docker-compose.yml.
+CMD ["pnpm", "start"]

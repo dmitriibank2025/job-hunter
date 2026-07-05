@@ -41,18 +41,50 @@ function getProjectRoot(): string {
     }
 }
 
+/**
+ * Save a text file to storage (local or S3 depending on USE_S3).
+ * Returns the relative key (used as the stored path in DB).
+ */
 export async function saveTextFile(
     folder: string,
     fileName: string,
     content: string,
-) {
+): Promise<string> {
+    const relativeKey = path.posix.join(folder.replace(/\\/g, "/"), fileName);
+
+    if (process.env.USE_S3 === "true") {
+        const { getObjectStorage } = await import("../infrastructure/object-storage.js");
+        await getObjectStorage().put(relativeKey, content);
+        return relativeKey;
+    }
+
     const dir = path.join(getStorageRoot(), folder);
-
     await ensureDir(dir);
-
     const filePath = path.join(dir, fileName);
-
     await fs.writeFile(filePath, content, "utf-8");
+    return filePath;
+}
 
+/**
+ * Save a binary file (Buffer) to storage (local or S3).
+ * Returns the relative key.
+ */
+export async function saveBinaryFile(
+    folder: string,
+    fileName: string,
+    content: Buffer,
+): Promise<string> {
+    const relativeKey = path.posix.join(folder.replace(/\\/g, "/"), fileName);
+
+    if (process.env.USE_S3 === "true") {
+        const { getObjectStorage } = await import("../infrastructure/object-storage.js");
+        await getObjectStorage().put(relativeKey, content);
+        return relativeKey;
+    }
+
+    const dir = path.join(getStorageRoot(), folder);
+    await ensureDir(dir);
+    const filePath = path.join(dir, fileName);
+    await fs.writeFile(filePath, content);
     return filePath;
 }

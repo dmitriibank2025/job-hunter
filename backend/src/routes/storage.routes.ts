@@ -4,6 +4,7 @@ import path from "path";
 import { prisma } from "../infrastructure/prisma";
 import { requireAuthUser } from "../middleware/auth.middleware";
 import { getStorageRoot } from "../services/file-storage.service";
+import { getObjectStorage, isS3Enabled } from "../infrastructure/object-storage";
 import { ensureUserDocumentForStoragePath } from "../services/user-job-repair.service";
 
 export function createStorageRouter() {
@@ -79,22 +80,34 @@ export function createStorageRouter() {
                     : Promise.resolve(null),
             ]);
 
-            if (!resume && !coverLetter && !profile && !resumeBase) {
+            const hasAccess = Boolean(resume ?? coverLetter ?? profile ?? resumeBase);
+
+            if (!hasAccess) {
                 const repaired = await ensureUserDocumentForStoragePath(
                     authUser.id,
                     normalizedRelativePath,
                     absolutePath,
                 );
 
-                if (repaired) {
-                    res.download(absolutePath, path.basename(absolutePath));
+                if (!repaired) {
+                    res.status(403).json({ success: false, message: "You do not have access to this file." });
                     return;
                 }
+            }
 
-                res.status(403).json({ success: false, message: "You do not have access to this file." });
+            // S3 path: redirect to presigned URL
+            if (isS3Enabled()) {
+                const storage = getObjectStorage();
+                const url = await storage.presignedUrl(relativeSuffix, 900);
+                if (!url) {
+                    res.status(500).json({ success: false, message: "Could not generate download link." });
+                    return;
+                }
+                res.redirect(302, url);
                 return;
             }
 
+            // Local filesystem path
             if (!fs.existsSync(absolutePath)) {
                 res.status(404).json({ success: false, message: "File not found." });
                 return;

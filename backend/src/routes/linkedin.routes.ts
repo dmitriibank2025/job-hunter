@@ -16,6 +16,7 @@ export function createLinkedInRouter() {
         res.status(202).json({
             success: true,
             connectionId: connection.connectionId,
+            viewUrl: connection.viewUrl,
         });
     });
 

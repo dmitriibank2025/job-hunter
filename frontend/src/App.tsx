@@ -55,6 +55,7 @@ type LinkedInStatus = {
   connectionId?: string;
   connectionStatus?: "PENDING" | "CONNECTED" | "FAILED";
   error?: string;
+  viewUrl?: string;
 };
 
 type GmailStatus = {
@@ -91,6 +92,7 @@ export function App() {
     portfolio: "",
     languages: "",
     summary: "",
+    telegramBotToken: "",
   });
   const emptyExperience: ExperienceEntry = {
     company: "",
@@ -117,6 +119,8 @@ export function App() {
   const [resumePreview, setResumePreview] = useState("");
   const [linkedinStatus, setLinkedinStatus] = useState<LinkedInStatus>({ connected: false });
   const [gmailStatus, setGmailStatus] = useState<GmailStatus>({ configured: false, connected: false });
+  const [telegramStatus, setTelegramStatus] = useState<any | null>(null);
+  const [telegramConnect, setTelegramConnect] = useState<any | null>(null);
   const [linkedinConnectionId, setLinkedinConnectionId] = useState("");
   const [manualJob, setManualJob] = useState({ url: "", title: "", company: "", location: "", description: "" });
   const [selectedJobId, setSelectedJobId] = useState("");
@@ -262,7 +266,8 @@ export function App() {
     let cancelled = false;
     const loadProgress = async () => {
       try {
-        const data = await api<{ progress: any }>("/jobs/automation/status");
+        const uid = settings.userId;
+        const data = await api<{ progress: any }>(`/jobs/automation/status${uid ? `?userId=${uid}` : ""}`);
         if (!cancelled) setProgress(data.progress);
       } catch (error) {
         if (!cancelled) setProgress((current: any) => current || { message: errorMessage(error), error: errorMessage(error) });
@@ -321,6 +326,8 @@ export function App() {
       portfolio: nextUser.profile?.portfolio || "",
       languages: (nextUser.profile?.languages || []).join(", "),
       summary: nextUser.profile?.summary || "",
+      // Bot token is write-only from the client: never hydrated back (server never returns it).
+      telegramBotToken: "",
     });
     setSelectedTech(new Set((nextUser.technologies || []).map((item) => item.name)));
     const loadedExperiences: ExperienceEntry[] = (nextUser.experiences || []).map((item: any) => ({
@@ -480,13 +487,17 @@ export function App() {
 
   async function saveProfile() {
     const userId = requireUserId();
+    const { telegramBotToken, ...rest } = profile;
     await api(`/users/${userId}/profile`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         fullName: settings.accountFullName,
         email: settings.accountEmail,
-        ...profile,
+        ...rest,
+        // Bot token is write-only and blank after load; only send it when the
+        // user actually typed one, so saves never wipe a stored token.
+        ...(telegramBotToken ? { telegramBotToken } : {}),
         languages: splitTerms(profile.languages),
       }),
     });
@@ -656,6 +667,7 @@ export function App() {
             requiredTech: splitTerms(settings.requiredTech),
             excludedKeywords: splitTerms(settings.excludedKeywords),
             dateRangeDays: Number(settings.dateRangeDays),
+            gmailScanDays: Number(settings.gmailScanDays),
             minMatchScore: Number(settings.minMatchScore),
           },
         }),
@@ -871,7 +883,7 @@ export function App() {
 
   async function connectLinkedIn() {
     requireUserId();
-    const data = await api<{ success: boolean; connectionId: string }>("/linkedin/connect", {
+    const data = await api<{ success: boolean; connectionId: string; viewUrl?: string }>("/linkedin/connect", {
       method: "POST",
     });
     setLinkedinConnectionId(data.connectionId);
@@ -881,7 +893,14 @@ export function App() {
       connectionStatus: "PENDING",
       error: undefined,
     }));
-    setStatus("LinkedIn login browser opened. Complete login to finish connecting.");
+    if (data.viewUrl) {
+      // Remote-view mode: open the live LinkedIn login window (noVNC) so the user
+      // logs into their own account. Session completes when the watcher detects login.
+      window.open(data.viewUrl, "_blank", "noopener,noreferrer");
+      setStatus("LinkedIn login window opened — sign in to your account there, then return here.");
+    } else {
+      setStatus("LinkedIn login started. Complete login to finish connecting.");
+    }
   }
 
   async function disconnectLinkedIn() {
@@ -905,7 +924,17 @@ export function App() {
   useEffect(() => {
     if (!user?.id) return;
     void loadGmailStatus(user.id).catch(() => undefined);
+    void loadTelegramStatus(user.id).catch(() => undefined);
   }, [user?.id]);
+
+  // While a Telegram connect is pending, poll status until the webhook binds the chat.
+  useEffect(() => {
+    if (!user?.id || !telegramConnect || telegramStatus?.connected) return undefined;
+    const timer = window.setInterval(() => {
+      void loadTelegramStatus(user.id).catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [user?.id, telegramConnect, telegramStatus?.connected]);
 
   async function markJob(jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string; rejectionReason?: string }) {
     const userId = requireUserId();
@@ -929,6 +958,47 @@ export function App() {
     const status = await api<GmailStatus>(`/email/gmail/status?userId=${userId}`);
     setGmailStatus(status);
     return status;
+  }
+
+  async function loadTelegramStatus(userId = settings.userId) {
+    if (!userId) return null;
+    const status = await api<any>(`/api/user/telegram/status?userId=${userId}`);
+    setTelegramStatus(status);
+    // Once connected, clear any pending connect panel.
+    if (status?.connected) setTelegramConnect(null);
+    return status;
+  }
+
+  async function connectTelegram() {
+    const userId = requireUserId();
+    try {
+      const data = await api<any>("/api/user/telegram/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
+      setTelegramConnect({ connectUrl: data.connectUrl, botUsername: data.botUsername, expiresAt: data.expiresAt });
+      window.open(data.connectUrl, "_blank", "noopener,noreferrer");
+      setStatus(`Open @${data.botUsername} in Telegram and press Start to finish connecting.`);
+    } catch (err) {
+      handleError(err, "Telegram connect");
+    }
+  }
+
+  async function disconnectTelegram() {
+    const userId = requireUserId();
+    try {
+      await api("/api/user/telegram/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
+      setTelegramConnect(null);
+      await loadTelegramStatus(userId).catch(() => undefined);
+      setStatus("Telegram disconnected.");
+    } catch (err) {
+      handleError(err, "Telegram disconnect");
+    }
   }
 
   async function connectGmail() {
@@ -1217,6 +1287,11 @@ export function App() {
                   onSaveBaseResume={() => void saveBaseResume().catch(handleError)}
                   onDeleteBaseResume={() => void deleteBaseResume().catch(handleError)}
                   onDownload={handleDownload}
+                  telegramStatus={telegramStatus}
+                  telegramConnect={telegramConnect}
+                  onConnectTelegram={() => void connectTelegram()}
+                  onDisconnectTelegram={() => void disconnectTelegram()}
+                  onRefreshTelegramStatus={() => void loadTelegramStatus().catch(handleError)}
               />
           )}
 

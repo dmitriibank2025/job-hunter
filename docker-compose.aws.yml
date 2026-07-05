@@ -1,24 +1,80 @@
+# Production deployment compose file.
+#
+# IMPORTANT — single backend replica only.
+# The daily job scheduler uses in-process node-cron coordination (no distributed
+# lock). Running more than one backend replica will cause duplicate scheduled
+# runs and duplicate notifications. For the beta, deploy exactly ONE backend
+# instance. See backend/src/services/job-report-scheduler.service.ts.
+#
+# Required secrets (no safe defaults — the backend refuses to start in
+# production without them):
+#   DATABASE_URL          Postgres connection string (managed DB, not a container)
+#   AUTH_TOKEN_SECRET     >=32 chars; signs access tokens AND Gmail OAuth state
+#   CORS_ORIGIN           exact allowed web origin(s), comma-separated
+#   ENCRYPTION_KEY        64 hex chars (32 bytes); encrypts per-user Gmail/Telegram secrets
+#   OPENAI_API_KEY        for analysis/resume generation
+#
+# Object storage (recommended for production — see STORAGE note below):
+#   USE_S3=true, S3_BUCKET, S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+#   (S3_ENDPOINT optional for S3-compatible stores such as Cloudflare R2 / MinIO)
+
 services:
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
     image: job-hunter-backend:local
+    # Run migrations out-of-band before starting (see backend/Dockerfile note).
     environment:
       NODE_ENV: production
       SERVE_FRONTEND: "false"
       PORT: 4000
-      STORAGE_DIR: /app/storage
+
+      # --- Required secrets (fail-fast if missing) ---
       DATABASE_URL: ${DATABASE_URL}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET}
       CORS_ORIGIN: ${CORS_ORIGIN}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+      # --- Object storage ---
+      # PRODUCTION: set USE_S3=true and the S3_* / AWS_* vars so generated resumes
+      # survive container restarts and horizontal moves. The local volume below is
+      # a NON-PROD fallback only and is NOT durable across redeploys.
+      USE_S3: ${USE_S3:-false}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      # Local fallback path used only when USE_S3=false (non-prod).
+      STORAGE_DIR: /app/storage
+
+      # --- Optional integrations (per-user secrets preferred via the app UI) ---
+      GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
+      GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
+      GMAIL_REDIRECT_URI: ${GMAIL_REDIRECT_URI:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      # Required for the guided "Connect Telegram" flow:
+      #   TELEGRAM_WEBHOOK_SECRET - path secret Telegram must include in webhook calls
+      #   PUBLIC_API_BASE_URL     - public https base URL of THIS backend, used to
+      #                             register per-user bot webhooks (setWebhook)
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-}
+
+      # --- Scheduling / providers ---
       ACTIVE_PROVIDERS: ${ACTIVE_PROVIDERS:-LINKEDIN,CENTER_ISRAEL}
       JOB_REPORT_CRON: ${JOB_REPORT_CRON:-0 9 * * *}
       JOB_REPORT_TIMEZONE: ${JOB_REPORT_TIMEZONE:-Asia/Jerusalem}
       DAILY_JOB_REPORT_ENABLED: ${DAILY_JOB_REPORT_ENABLED:-true}
     ports:
       - "4000:4000"
+    # Single replica only (see header note). Do not scale this service.
+    deploy:
+      replicas: 1
     volumes:
+      # NON-PROD fallback storage. Ignored when USE_S3=true.
       - backend_storage:/app/storage
 
   frontend:

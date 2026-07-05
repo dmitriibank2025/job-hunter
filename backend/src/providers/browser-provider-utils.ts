@@ -3,6 +3,35 @@ import path from "path";
 import { Browser, BrowserContext, BrowserContextOptions, Page, chromium } from "playwright";
 import { ParsedJob } from "./types";
 
+// ─── Browser concurrency semaphore ───────────────────────────────────────────
+// Limits the number of Playwright browsers running simultaneously.
+// Controlled by MAX_CONCURRENT_BROWSERS (default: 3).
+const MAX_CONCURRENT_BROWSERS = Math.max(1, Number(process.env.MAX_CONCURRENT_BROWSERS ?? 3));
+let activeBrowsers = 0;
+const browserQueue: Array<() => void> = [];
+
+function acquireBrowserSlot(): Promise<void> {
+    return new Promise((resolve) => {
+        if (activeBrowsers < MAX_CONCURRENT_BROWSERS) {
+            activeBrowsers++;
+            resolve();
+        } else {
+            browserQueue.push(() => { activeBrowsers++; resolve(); });
+        }
+    });
+}
+
+function releaseBrowserSlot() {
+    const next = browserQueue.shift();
+    if (next) {
+        next();
+    } else {
+        activeBrowsers = Math.max(0, activeBrowsers - 1);
+    }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+
 export const DEFAULT_SEARCH_KEYWORDS = process.env.JOB_SEARCH_KEYWORDS ?? "Node.js TypeScript AWS Backend";
 export const DEFAULT_SEARCH_LOCATION = process.env.JOB_SEARCH_LOCATION ?? "Israel";
 export const DEFAULT_SEARCH_KEYWORD_QUERIES = (
@@ -163,9 +192,12 @@ export function hasGlassdoorStorageState(): boolean {
 export async function createProviderBrowser(options: {
     timeoutMs?: number;
 } = {}): Promise<Browser> {
+    await acquireBrowserSlot();
+
     const browser = await chromium.launch({
         headless: process.env.PROVIDER_HEADLESS !== "false",
-    });
+    }).catch((err) => { releaseBrowserSlot(); throw err; });
+
     const envTimeoutMs = Number(process.env.PROVIDER_BROWSER_TIMEOUT_MS ?? 120000);
     const timeoutMs = options.timeoutMs ?? envTimeoutMs;
 
@@ -177,6 +209,9 @@ export async function createProviderBrowser(options: {
         timer.unref?.();
         browser.on("disconnected", () => clearTimeout(timer));
     }
+
+    // Release slot when browser closes (normal or forced)
+    browser.on("disconnected", releaseBrowserSlot);
 
     return browser;
 }

@@ -2444,3 +2444,43 @@ input[type="file"] { cursor: pointer; }
   .signin-gate { min-height: auto; }
   .resume-paper { padding: 22px 16px; }
 }
+
+/* Telegram guided connect */
+.telegram-connect {
+  margin-top: 14px;
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-md);
+  background: var(--glass-0);
+  padding: 14px;
+}
+.telegram-connect.is-connected { border-color: rgba(74, 222, 128, 0.35); }
+.telegram-connect.is-pending { border-color: rgba(251, 191, 36, 0.35); }
+.telegram-connect-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.telegram-connect-body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.telegram-connect-body span { color: var(--text-muted); line-height: 1.45; }
+.telegram-connect .status-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-0);
+  color: var(--text-muted);
+}
+.telegram-connect .status-badge.is-connected {
+  color: rgb(74, 222, 128);
+  border-color: rgba(74, 222, 128, 0.4);
+}
+.telegram-connect .status-badge.is-pending {
+  color: rgb(251, 191, 36);
+  border-color: rgba(251, 191, 36, 0.4);
+}

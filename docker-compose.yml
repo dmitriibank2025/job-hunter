@@ -16,6 +16,21 @@ services:
         timeout: 5s
         retries: 20
 
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        INSTALL_PLAYWRIGHT: "false"
+    container_name: job-hunter-migrate
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+        DATABASE_URL: postgresql://postgres:postgres@postgres:5432/job_hunter
+    command: ["sh", "-c", "pnpm prisma migrate deploy"]
+
   backend:
     build:
       context: .
@@ -26,9 +41,12 @@ services:
     restart: always
     ports:
       - "4000:4000"
+      - "6080:6080"   # noVNC remote browser for LinkedIn login
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     env_file:
       - .env.example
     environment:
@@ -57,6 +75,9 @@ services:
         LINKEDIN_AUTH_TIMEOUT_MS: ${LINKEDIN_AUTH_TIMEOUT_MS:-300000}
         LINKEDIN_EMAIL: ${LINKEDIN_EMAIL:-}
         LINKEDIN_PASSWORD: ${LINKEDIN_PASSWORD:-}
+        # Per-user interactive LinkedIn login via noVNC remote browser
+        LINKEDIN_REMOTE_VIEW: ${LINKEDIN_REMOTE_VIEW:-true}
+        PUBLIC_NOVNC_BASE: ${PUBLIC_NOVNC_BASE:-http://localhost:6080}
         PROVIDER_BROWSER_TIMEOUT_MS: ${PROVIDER_BROWSER_TIMEOUT_MS:-120000}
         PROVIDER_PAGE_TIMEOUT_MS: ${PROVIDER_PAGE_TIMEOUT_MS:-20000}
         PROVIDER_TIMEOUT_MS: ${PROVIDER_TIMEOUT_MS:-150000}

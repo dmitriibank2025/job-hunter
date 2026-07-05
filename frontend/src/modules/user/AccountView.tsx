@@ -14,6 +14,23 @@ type ProfileDraft = {
   portfolio: string;
   languages: string;
   summary: string;
+  telegramBotToken: string;
+};
+
+export type TelegramStatus = {
+  connected: boolean;
+  pending: boolean;
+  hasBotToken: boolean;
+  usingSharedBot: boolean;
+  telegramUsername?: string | null;
+  telegramFirstName?: string | null;
+  connectedAt?: string | null;
+};
+
+export type TelegramConnectInfo = {
+  connectUrl: string;
+  botUsername: string;
+  expiresAt: string;
 };
 
 type BaseResumeDraft = {
@@ -60,10 +77,71 @@ type AccountViewProps = {
   onSaveBaseResume: () => void;
   onDeleteBaseResume: () => void;
   onDownload: (filePath?: string) => Promise<void>;
+  telegramStatus: TelegramStatus | null;
+  telegramConnect: TelegramConnectInfo | null;
+  onConnectTelegram: () => void;
+  onDisconnectTelegram: () => void;
+  onRefreshTelegramStatus: () => void;
 };
 
 function cleanItems(items: Array<string | undefined | null>) {
   return items.map((item) => item?.trim()).filter(Boolean) as string[];
+}
+
+function TelegramConnect({
+  status,
+  connect,
+  onConnect,
+  onDisconnect,
+  onRefresh,
+}: {
+  status: TelegramStatus | null;
+  connect: TelegramConnectInfo | null;
+  onConnect: () => void;
+  onDisconnect: () => void;
+  onRefresh: () => void;
+}) {
+  const connected = status?.connected;
+  const pending = !connected && (status?.pending || Boolean(connect));
+  const badge = connected ? "Connected" : pending ? "Pending" : "Not connected";
+  const badgeClass = connected ? "is-connected" : pending ? "is-pending" : "";
+  const canConnect = status?.hasBotToken || status?.usingSharedBot;
+
+  return (
+    <div className={`telegram-connect ${badgeClass}`}>
+      <div className="telegram-connect-head">
+        <strong>Telegram</strong>
+        <span className={`status-badge ${badgeClass}`}>{badge}</span>
+      </div>
+
+      {connected ? (
+        <div className="telegram-connect-body">
+          <span>
+            Connected{status?.telegramUsername ? ` as @${status.telegramUsername}` : status?.telegramFirstName ? ` as ${status.telegramFirstName}` : ""}.
+            You'll receive job reports here.
+          </span>
+          <button className="btn btn-secondary" type="button" onClick={onDisconnect}>Disconnect Telegram</button>
+        </div>
+      ) : connect ? (
+        <div className="telegram-connect-body">
+          <span>Open the bot <strong>@{connect.botUsername}</strong> and press <strong>Start</strong>. This page updates automatically once connected.</span>
+          <div className="button-row">
+            <a className="btn btn-primary" href={connect.connectUrl} target="_blank" rel="noopener noreferrer">Open Telegram</a>
+            <button className="btn btn-secondary" type="button" onClick={onRefresh}>I pressed Start</button>
+          </div>
+        </div>
+      ) : (
+        <div className="telegram-connect-body">
+          <span>
+            {canConnect
+              ? "Click connect, open the bot, and press Start. No Chat ID needed."
+              : "Add a Telegram bot token above (or ask the admin to enable the shared bot) to connect."}
+          </span>
+          <button className="btn btn-primary" type="button" disabled={!canConnect} onClick={onConnect}>Connect Telegram</button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function DetailGrid({ items }: { items: Array<{ label: string; value?: string | string[] }> }) {
@@ -165,9 +243,12 @@ function buildResumeInsights(content: string, input: {
     { label: "Contact details", done: Boolean(input.profile.phone || input.profile.linkedin || input.profile.github || input.profile.portfolio) },
     { label: "Target title", done: Boolean(input.targetTitle.trim()) },
     { label: "Professional summary", done: Boolean(input.profile.summary.trim()) },
-    { label: "Skills section", done: input.selectedTech.size >= 5 || /## skills/i.test(content) },
-    { label: "Experience", done: input.experiences.some((item) => item.company.trim() && item.title.trim()) },
-    { label: "Education", done: input.educations.some((item) => item.institution.trim() || item.program.trim()) },
+    { label: "Skills section", done: input.selectedTech.size >= 5 || /(^|\n)#{0,2}\s*skills\b/i.test(content) },
+    // Accept either structured form entries OR a matching section in the selected
+    // resume text — so an uploaded resume (which carries its own Experience/Education
+    // sections but may not populate the structured fields) is scored correctly.
+    { label: "Experience", done: input.experiences.some((item) => item.company.trim() && item.title.trim()) || /(^|\n)#{0,2}\s*experience\b/i.test(content) },
+    { label: "Education", done: input.educations.some((item) => item.institution.trim() || item.program.trim()) || /(^|\n)#{0,2}\s*education\b/i.test(content) },
     { label: "Search keyword coverage", done: keywords.length ? matchedKeywords.length / keywords.length >= 0.6 : true },
   ];
   const completed = checks.filter((check) => check.done).length;
@@ -238,6 +319,11 @@ export function AccountView({
   onSaveBaseResume,
   onDeleteBaseResume,
   onDownload,
+  telegramStatus,
+  telegramConnect,
+  onConnectTelegram,
+  onDisconnectTelegram,
+  onRefreshTelegramStatus,
 }: AccountViewProps) {
   const [editingContact, setEditingContact] = useState(false);
   const [editingTechnologies, setEditingTechnologies] = useState(false);
@@ -326,10 +412,25 @@ export function AccountView({
               );
             })}</div>
             <TextArea label="Professional Summary" rows={4} value={profile.summary} onChange={(value) => setProfile({ ...profile, summary: value })} />
+            <div className="search-explainer">
+              <strong>Telegram Notifications</strong>
+              <span>Get job reports in Telegram. Add your bot token (or use the app's shared bot), then connect by opening the bot and pressing Start — no Chat ID needed.</span>
+            </div>
+            <div className="form-grid">
+              <label className="field"><span>Telegram Bot Token {telegramStatus?.usingSharedBot ? "(optional — shared bot in use)" : ""}</span><input type="password" value={profile.telegramBotToken} placeholder="123456789:AAF..." onChange={(e) => setProfile({ ...profile, telegramBotToken: e.target.value })} /></label>
+            </div>
             <button className="btn btn-primary" type="button" onClick={() => {
               onSaveProfile();
               setEditingContact(false);
             }}>Save Profile</button>
+
+            <TelegramConnect
+              status={telegramStatus}
+              connect={telegramConnect}
+              onConnect={onConnectTelegram}
+              onDisconnect={onDisconnectTelegram}
+              onRefresh={onRefreshTelegramStatus}
+            />
           </>
         )}
       </section>
