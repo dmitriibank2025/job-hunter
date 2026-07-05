@@ -10,6 +10,7 @@ import path from "path";
 import mammoth from "mammoth";
 import { hashPassword, verifyPassword } from "./password.service";
 import { prisma } from "../infrastructure/prisma";
+import { encrypt } from "../infrastructure/field-encryption.js";
 import { getStorageRoot } from "./file-storage.service";
 import { linkedInStorageStatePathForUser, validateLinkedInStorageStatePath } from "./linkedin-account.service";
 import { BasicResumePdfTemplate, createBasicResumePdf } from "./resume-pdf.service";
@@ -234,6 +235,7 @@ type ProfileInput = {
     portfolio?: string | null;
     languages?: string[];
     summary?: string | null;
+    telegramBotToken?: string | null;
 };
 
 type ExperienceInput = {
@@ -296,7 +298,7 @@ export async function registerWorkspaceUser(input: {
     role?: UserRole;
 }) {
     const email = input.email.trim().toLowerCase();
-    const passwordHash = input.password ? hashPassword(input.password) : undefined;
+    const passwordHash = input.password ? await hashPassword(input.password) : undefined;
     const user = await prisma.appUser.upsert({
         where: { email },
         create: {
@@ -355,12 +357,18 @@ export async function loginWorkspaceUser(input: {
     }
 
     if (user.passwordHash) {
-        if (!input.password || !verifyPassword(input.password, user.passwordHash)) {
+        const pwCheck = input.password ? await verifyPassword(input.password, user.passwordHash) : { ok: false, needsRehash: false };
+        if (!pwCheck.ok) {
             throw new Error("Invalid password.");
+        }
+        // Transparently upgrade legacy PBKDF2 hashes to argon2id after a successful login.
+        if (pwCheck.needsRehash && input.password) {
+            const upgraded = await hashPassword(input.password);
+            await prisma.appUser.update({ where: { id: user.id }, data: { passwordHash: upgraded } });
         }
     } else if (input.password) {
         // If they don't have a password yet but entered one, set it!
-        const passwordHash = hashPassword(input.password);
+        const passwordHash = await hashPassword(input.password);
         await prisma.appUser.update({
             where: { id: user.id },
             data: { passwordHash },
@@ -371,6 +379,84 @@ export async function loginWorkspaceUser(input: {
         ...user,
         limits: PLAN_LIMITS[user.plan],
     };
+}
+
+const RESUME_SECTION_NAMES = new Set([
+    "SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION", "LANGUAGES", "PERSONAL PROJECTS",
+]);
+
+/**
+ * Infer a resume target (FULLSTACK / FRONTEND / BACKEND) from the file name and
+ * the resume header. Full-stack wins over the single-discipline matches because
+ * "Full Stack" titles also contain "stack" but should not be read as backend.
+ */
+function inferResumeTargetFromText(text: string): "FULLSTACK" | "FRONTEND" | "BACKEND" {
+    const t = text.toLowerCase();
+    if (/\bfull[\s_-]*stack\b/.test(t)) return "FULLSTACK";
+    if (/\bfront[\s_-]*end\b/.test(t)) return "FRONTEND";
+    if (/\bback[\s_-]*end\b/.test(t)) return "BACKEND";
+    return "FULLSTACK";
+}
+
+/**
+ * Clean text extracted from an uploaded resume (PDF/DOCX).
+ *
+ * PDF extraction in particular introduces artifacts that corrupt downstream
+ * generation: page-of-page markers ("-- 1 of 2 --") and hard line wraps that
+ * split a single bullet across several lines. We strip the markers and re-join
+ * wrapped continuation lines so the stored base text is one logical line per
+ * bullet — which the prompt, skeleton-merge, and DOCX renderer all expect.
+ */
+export function cleanExtractedResumeText(raw: string): string {
+    const lines = raw.replace(/\r\n/g, "\n").split("\n");
+    const isPageMarker = (s: string) =>
+        /^\s*-*\s*(page\s+)?\d+\s+of\s+\d+\s*-*\s*$/i.test(s) || /^\s*-{2,}\s*\d+\s*-{2,}\s*$/.test(s);
+    const bulletRe = /^[•\-\*●]\s+/;
+    const isStructural = (s: string) => {
+        const t = s.trim();
+        if (!t) return true;
+        if (bulletRe.test(t)) return true;
+        if (/\|/.test(t)) return true;                       // job/education header
+        if (/^Technologies:/i.test(t)) return true;
+        if (/^#+\s/.test(t)) return true;                    // markdown heading
+        if (RESUME_SECTION_NAMES.has(t.replace(/^#+\s*/, "").toUpperCase())) return true;
+        return false;
+    };
+
+    // A header/section line must never absorb a following line.
+    const isHeaderOrSection = (s: string) => {
+        const t = s.trim();
+        return /\|/.test(t) || /^Technologies:/i.test(t) || /^#+\s/.test(t) ||
+            RESUME_SECTION_NAMES.has(t.replace(/^#+\s*/, "").toUpperCase());
+    };
+
+    const out: string[] = [];
+    for (const rawLine of lines) {
+        const line = rawLine.replace(/\s+$/, "");
+        const t = line.trim();
+        if (isPageMarker(t)) continue;
+        if (!t) { out.push(""); continue; }
+
+        // Re-join PDF mid-line wraps. The current line is a continuation of the
+        // previous bullet/sentence when the previous line is a bullet or plain
+        // sentence (NOT a header/section) AND it does not end with terminal
+        // punctuation (.!?:) — or it ends with an obviously incomplete token
+        // (–, -, |, ,). This repairs splits like "...across all\nAPI surfaces"
+        // and "2024 –\nPresent" without merging two complete bullets.
+        const prev = out.length ? out[out.length - 1] : "";
+        const prevT = prev.trim();
+        const prevMergeable = Boolean(prevT) && !isHeaderOrSection(prevT);
+        const curMergeable = !isStructural(t);
+        const continuation = prevMergeable && curMergeable &&
+            (!/[.!?:]$/.test(prevT) || /[–\-|,]$/.test(prevT) || /^[a-z(]/.test(t));
+        if (continuation) {
+            out[out.length - 1] = prev.endsWith("-") ? prev + t : `${prev} ${t}`;
+            continue;
+        }
+        out.push(line);
+    }
+
+    return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 export async function saveUploadedResume(
@@ -387,18 +473,14 @@ export async function saveUploadedResume(
         throw new Error("Complete the user profile before uploading a resume.");
     }
 
-    const storageRoot = getStorageRoot();
-    const resumesDir = path.join(storageRoot, "resumes", userId);
-    await fs.mkdir(resumesDir, { recursive: true });
-
     const buffer = Buffer.from(base64Content, "base64");
-    const filePath = path.join(resumesDir, fileName);
-    await fs.writeFile(filePath, buffer);
-
-    const relativePath = `resumes/${userId}/${fileName}`;
+    const { saveBinaryFile } = await import("./file-storage.service.js");
+    const relativePath = await saveBinaryFile(`resumes/${userId}`, fileName, buffer);
+    // Normalize to relative key for storage-route compatibility
+    const relativeKey = relativePath.replace(/\\/g, "/").replace(/^.*resumes\//, "resumes/");
     await prisma.userProfile.update({
         where: { userId },
-        data: { resumeFilePath: relativePath },
+        data: { resumeFilePath: relativeKey },
     });
 
     let textContent = "";
@@ -430,6 +512,8 @@ export async function saveUploadedResume(
         throw new Error("Unsupported file type. Please upload .txt, .md, .pdf, or .docx.");
     }
 
+    textContent = cleanExtractedResumeText(textContent);
+
     if (!textContent || textContent.trim().length < 50) {
         throw new Error("Extracted resume text is too short or empty. Please ensure the file contains readable text.");
     }
@@ -443,7 +527,10 @@ export async function saveUploadedResume(
         data: {
             userId,
             name: `Uploaded: ${fileName}`,
-            target: "FULLSTACK",
+            // Infer the target from the FILE NAME only — the resume header often
+            // says "Frontend-Focused Full Stack…", which would mis-classify a
+            // Frontend resume as FULLSTACK. The file name is the explicit signal.
+            target: inferResumeTargetFromText(fileName),
             targetTitle: "Uploaded Resume",
             content: textContent,
             sourceFilePath: relativePath,
@@ -475,8 +562,22 @@ export async function getWorkspaceUser(userId: string) {
         },
     });
 
+    // Never expose secrets (bot token) or raw chat binding to the client.
+    // Surface a derived Telegram connection state instead.
+    const profile = user.profile
+        ? (() => {
+            const { telegramBotToken, telegramChatId, ...safeProfile } = user.profile;
+            return {
+                ...safeProfile,
+                telegramHasBotToken: Boolean(telegramBotToken),
+                telegramConnected: Boolean(telegramChatId),
+            };
+        })()
+        : user.profile;
+
     return {
         ...user,
+        profile,
         limits: PLAN_LIMITS[user.plan],
         linkedinNotice: LINKEDIN_ACCOUNT_NOTICE,
     };
@@ -499,6 +600,8 @@ export async function upsertUserProfile(userId: string, input: ProfileInput) {
             portfolio: input.portfolio,
             languages,
             summary: input.summary,
+            telegramBotToken: input.telegramBotToken ? encrypt(input.telegramBotToken) : null,
+            // telegramChatId is managed by the connect flow (webhook), not profile saves.
         },
         update: {
             fullName: input.fullName,
@@ -510,6 +613,12 @@ export async function upsertUserProfile(userId: string, input: ProfileInput) {
             portfolio: input.portfolio,
             languages,
             summary: input.summary,
+            // Only touch the bot token when the caller actually sent the field,
+            // so unrelated profile saves never wipe it. Empty string clears it.
+            ...(input.telegramBotToken !== undefined
+                ? { telegramBotToken: input.telegramBotToken ? encrypt(input.telegramBotToken) : null }
+                : {}),
+            // telegramChatId intentionally omitted — never client-managed.
         },
     });
 }
@@ -1100,7 +1209,16 @@ function resumeBasePdfPath(userId: string, resumeBaseId: string) {
     return path.join(getStorageRoot(), "users", userId, "resume-bases", `${resumeBaseId}.pdf`);
 }
 
+function resumeBasePdfKey(userId: string, resumeBaseId: string) {
+    return `users/${userId}/resume-bases/${resumeBaseId}.pdf`;
+}
+
 async function resumeBasePdfPathIfExists(userId: string, resumeBaseId: string) {
+    const { getObjectStorage, isS3Enabled } = await import("../infrastructure/object-storage.js");
+    if (isS3Enabled()) {
+        const key = resumeBasePdfKey(userId, resumeBaseId);
+        return (await getObjectStorage().exists(key)) ? key : null;
+    }
     const pdfPath = resumeBasePdfPath(userId, resumeBaseId);
     try {
         await fs.access(pdfPath);
@@ -1112,15 +1230,21 @@ async function resumeBasePdfPathIfExists(userId: string, resumeBaseId: string) {
 
 async function createResumeBasePdf(userId: string, resumeBaseId: string, content: string, _template: BasicResumePdfTemplate = "ATS") {
     const pdfPath = resumeBasePdfPath(userId, resumeBaseId);
-    // Create a styled DOCX first, then convert to PDF via LibreOffice so the PDF
-    // reflects the visual styling instead of being a plain programmatic render.
     const docxPath = pdfPath.replace(/\.pdf$/, ".docx");
+    // Always generate to local disk first (LibreOffice needs a real path)
     try {
         await createStyledResumeDocx(content, docxPath);
         await convertDocxToPdf({ docxPath, outputPath: pdfPath });
     } catch {
-        // LibreOffice not available (e.g. local dev without soffice) → fallback to basic PDF.
         await createBasicResumePdf(content, pdfPath, _template);
+    }
+    // Upload to S3 if enabled, return the relative key
+    const { getObjectStorage, isS3Enabled } = await import("../infrastructure/object-storage.js");
+    if (isS3Enabled()) {
+        const key = resumeBasePdfKey(userId, resumeBaseId);
+        const buffer = await fs.readFile(pdfPath);
+        await getObjectStorage().put(key, buffer);
+        return key;
     }
     return pdfPath;
 }

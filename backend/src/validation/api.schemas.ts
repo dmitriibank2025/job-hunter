@@ -56,7 +56,9 @@ export const automationRunSchema = z.object({
         targetLocations: z.array(z.string()).optional(),
         requiredTech: z.array(z.string()).optional(),
         excludedKeywords: z.array(z.string()).optional(),
+        excludedTitleKeywords: z.array(z.string()).optional(),
         dateRangeDays: z.coerce.number().int().positive().optional(),
+        gmailScanDays: z.coerce.number().int().positive().optional(),
         minMatchScore: z.coerce.number().min(0).max(100).optional(),
     }).optional(),
 });
@@ -95,6 +97,9 @@ export const userProfileSchema = z.object({
     portfolio: z.string().trim().optional(),
     languages: z.array(z.enum(LANGUAGE_OPTIONS)).default([]),
     summary: z.string().trim().optional(),
+    telegramBotToken: z.string().trim().optional(),
+    // telegramChatId is intentionally NOT accepted from the client — it is
+    // captured server-side via the guided connect flow (webhook /start).
 });
 
 export const userTechnologySchema = z.object({

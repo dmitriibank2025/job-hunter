@@ -1,6 +1,11 @@
 import { app } from "./app";
+import { requireEncryptionKeyInProduction } from "./infrastructure/field-encryption.js";
+import { validateEnv } from "./config/env";
 import { prisma } from "./infrastructure/prisma";
 import { startDailyJobReportSchedule, stopDailyJobReportSchedule } from "./services/job-report-scheduler.service";
+
+validateEnv();
+requireEncryptionKeyInProduction();
 
 let shuttingDown = false;
 let server: ReturnType<typeof app.listen> | undefined;

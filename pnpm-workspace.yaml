@@ -1,3 +1,22 @@
 packages:
   - "backend"
   - "frontend"
+
+# Dependencies allowed to run install/build scripts.
+# In pnpm v10 this lives in pnpm-workspace.yaml (the package.json "pnpm.onlyBuiltDependencies"
+# field is ignored with a warning). Keep this list explicit and minimal so local installs
+# and CI are deterministic and no unexpected postinstall scripts run.
+#   - argon2          : native password-hashing binding
+#   - esbuild         : native bundler used by Vite
+#   - prisma/@prisma/*: Prisma engine + client generation
+#   - unrs-resolver   : native module resolver used by the lint toolchain
+#   - playwright      : browser automation (browsers installed separately in Dockerfile)
+# @scarf/scarf (telemetry) is intentionally NOT approved.
+onlyBuiltDependencies:
+  - argon2
+  - esbuild
+  - prisma
+  - "@prisma/client"
+  - "@prisma/engines"
+  - unrs-resolver
+  - playwright

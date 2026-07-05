@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  typecheck-backend:
+    name: Typecheck Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # argon2/esbuild/prisma need build scripts; onlyBuiltDependencies in
+      # pnpm-workspace.yaml permits them while keeping installs reproducible.
+      - run: pnpm install --frozen-lockfile --filter job-hunter-backend...
+      - run: pnpm --filter job-hunter-backend exec prisma generate
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/job_hunter
+      - run: pnpm --filter job-hunter-backend exec tsc --noEmit
+
+  typecheck-frontend:
+    name: Typecheck Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter job-hunter-frontend...
+      - run: pnpm --filter job-hunter-frontend exec tsc --noEmit
+
+  test-backend:
+    name: Unit Tests Backend
+    runs-on: ubuntu-latest
+    needs: [typecheck-backend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter job-hunter-backend...
+      - run: pnpm --filter job-hunter-backend exec prisma generate
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/job_hunter
+      - run: pnpm --filter job-hunter-backend run test
+        env:
+          NODE_ENV: test
+          # Tests that exercise field-encryption use a throwaway key
+          ENCRYPTION_KEY: ${{ secrets.TEST_ENCRYPTION_KEY || 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }}
+
+  build-backend:
+    name: Build Backend Docker Image
+    runs-on: ubuntu-latest
+    needs: [typecheck-backend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: false
+          build-args: |
+            INSTALL_PLAYWRIGHT=false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-frontend:
+    name: Build Frontend Docker Image
+    runs-on: ubuntu-latest
+    needs: [typecheck-frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: frontend/Dockerfile
+          push: false
+          build-args: |
+            JOB_HUNTER_API_BASE_URL=https://api.example.com
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

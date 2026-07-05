@@ -18,7 +18,8 @@
     "prisma:generate": "dotenv -e ../.env -- prisma generate",
     "prisma:migrate:deploy": "dotenv -e ../.env -- prisma migrate deploy",
     "prisma:studio": "dotenv -e ../.env -- prisma studio",
-    "test": "pnpm run typecheck"
+    "test": "jest --config jest.config.cjs",
+    "test:coverage": "jest --config jest.config.cjs --coverage"
   },
   "private": true,
   "devDependencies": {
@@ -27,6 +28,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/hpp": "^0.2.7",
+    "@types/jest": "^30.0.0",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/morgan": "^1.9.10",
     "@types/node": "^25.9.1",
@@ -48,9 +50,11 @@
   "dependencies": {
     "@aws-sdk/client-cloudwatch-logs": "^3.1063.0",
     "@aws-sdk/client-dynamodb": "^3.1063.0",
+    "@aws-sdk/client-s3": "^3.1075.0",
     "@aws-sdk/client-sqs": "^3.1063.0",
     "@aws-sdk/credential-providers": "^3.1063.0",
     "@aws-sdk/lib-dynamodb": "^3.1063.0",
+    "@aws-sdk/s3-request-presigner": "^3.1075.0",
     "@prisma/client": "^5.22.0",
     "argon2": "^0.44.0",
     "compression": "^1.8.1",

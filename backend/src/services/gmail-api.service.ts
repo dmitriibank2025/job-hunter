@@ -1,3 +1,5 @@
+import { encrypt, decrypt } from "../infrastructure/field-encryption.js";
+import { signOAuthState, verifyOAuthState } from "./oauth-state.service.js";
 import { prisma } from "../infrastructure/prisma";
 
 type GmailConfig = {
@@ -95,7 +97,7 @@ async function getGmailConfig(userId?: string): Promise<GmailConfig | null> {
         if (account?.isActive && account.refreshToken) {
             return {
                 ...client,
-                refreshToken: account.refreshToken,
+                refreshToken: decrypt(account.refreshToken),
                 userId: account.googleUserId || "me",
                 appUserId: userId,
             };
@@ -122,7 +124,7 @@ export function buildGmailAuthUrl(userId: string): string {
         throw new Error("GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET are required.");
     }
 
-    const state = Buffer.from(JSON.stringify({ userId }), "utf8").toString("base64url");
+    const state = signOAuthState(userId);
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
 
     url.searchParams.set("client_id", client.clientId);
@@ -137,15 +139,7 @@ export function buildGmailAuthUrl(userId: string): string {
 }
 
 function userIdFromOAuthState(state?: string | null): string {
-    if (!state) throw new Error("Missing OAuth state.");
-
-    try {
-        const decoded = JSON.parse(Buffer.from(state, "base64url").toString("utf8")) as { userId?: string };
-        if (!decoded.userId) throw new Error("Missing userId in OAuth state.");
-        return decoded.userId;
-    } catch {
-        throw new Error("Invalid OAuth state.");
-    }
+    return verifyOAuthState(state);
 }
 
 async function fetchGmailProfile(accessToken: string, googleUserId = "me"): Promise<{ emailAddress?: string }> {
@@ -205,7 +199,7 @@ export async function connectGmailFromOAuthCallback(input: {
             userId,
             email: profile.emailAddress,
             googleUserId: "me",
-            refreshToken: data.refresh_token,
+            refreshToken: encrypt(data.refresh_token),
             scopes,
             connectedAt: new Date(),
             isActive: true,
@@ -214,7 +208,7 @@ export async function connectGmailFromOAuthCallback(input: {
         update: {
             email: profile.emailAddress,
             googleUserId: "me",
-            refreshToken: data.refresh_token,
+            refreshToken: encrypt(data.refresh_token),
             scopes,
             connectedAt: new Date(),
             isActive: true,

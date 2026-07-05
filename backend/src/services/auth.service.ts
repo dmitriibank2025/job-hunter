@@ -15,8 +15,16 @@ type AccessTokenPayload = {
     exp: number;
 };
 
-function authSecret() {
-    return process.env.AUTH_TOKEN_SECRET ?? process.env.JWT_SECRET ?? "job-hunter-local-dev-secret";
+function authSecret(): string {
+    const secret = process.env.AUTH_TOKEN_SECRET ?? process.env.JWT_SECRET;
+    if (!secret) {
+        if (process.env.NODE_ENV === "production") {
+            console.error("[FATAL] AUTH_TOKEN_SECRET is not set. Refusing to start.");
+            process.exit(1);
+        }
+        return "job-hunter-local-dev-secret-DO-NOT-USE-IN-PRODUCTION";
+    }
+    return secret;
 }
 
 function base64Url(value: Buffer | string) {
@@ -107,7 +115,7 @@ export async function registerWithPassword(input: {
         ? await prisma.appUser.update({
             where: { id: existing.id },
             data: {
-                passwordHash: hashPassword(input.password),
+                passwordHash: await hashPassword(input.password),
                 plan: input.plan ?? existing.plan,
                 role: input.role ?? existing.role,
                 profile: input.fullName
@@ -124,7 +132,7 @@ export async function registerWithPassword(input: {
         : await prisma.appUser.create({
             data: {
                 email,
-                passwordHash: hashPassword(input.password),
+                passwordHash: await hashPassword(input.password),
                 plan: input.plan ?? "FREE",
                 role: input.role ?? "USER",
                 profile: input.fullName ? { create: { fullName: input.fullName, email } } : undefined,
@@ -145,8 +153,18 @@ export async function loginWithPassword(input: { email: string; password: string
         include: { profile: true },
     });
 
-    if (!user?.passwordHash || !verifyPassword(input.password, user.passwordHash)) {
+    if (!user?.passwordHash) {
         throw new HttpError(401, "Invalid email or password.");
+    }
+    const { ok, needsRehash } = await verifyPassword(input.password, user.passwordHash);
+    if (!ok) {
+        throw new HttpError(401, "Invalid email or password.");
+    }
+
+    // Transparently upgrade legacy PBKDF2 hashes to argon2id on next successful login.
+    if (needsRehash) {
+        const newHash = await hashPassword(input.password);
+        await prisma.appUser.update({ where: { id: user.id }, data: { passwordHash: newHash } });
     }
 
     return {

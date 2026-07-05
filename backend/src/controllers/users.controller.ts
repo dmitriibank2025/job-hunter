@@ -40,11 +40,17 @@ export async function updateProfile(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
     await requireUserAccess(req, userId);
     const input = userProfileSchema.parse(req.body ?? {});
-    const profile = await upsertUserProfile(userId, input);
+    const saved = await upsertUserProfile(userId, input);
 
+    // Never return secrets/raw chat binding to the client.
+    const { telegramBotToken, telegramChatId, ...safeProfile } = saved;
     res.json({
         success: true,
-        profile,
+        profile: {
+            ...safeProfile,
+            telegramHasBotToken: Boolean(telegramBotToken),
+            telegramConnected: Boolean(telegramChatId),
+        },
     });
 }
 

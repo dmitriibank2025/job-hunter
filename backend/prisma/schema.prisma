@@ -76,6 +76,7 @@ model AppUser {
   appliedVacancies      AppliedVacancy[]
   rejectionRecords      RejectionRecord[]
   promptRules           PromptRule[]
+  telegramConnectSessions TelegramConnectSession[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -125,12 +126,36 @@ model UserProfile {
   linkedin       String?
   github         String?
   portfolio      String?
-  resumeFilePath String?
-  languages      String[] @default([])
-  summary        String?  @db.Text
+  resumeFilePath     String?
+  languages          String[] @default([])
+  summary            String?  @db.Text
+  telegramBotToken    String?  // encrypted at rest, never returned to the client
+  telegramChatId      String?  // captured server-side via the connect flow; never client-supplied
+  telegramUsername    String?
+  telegramFirstName   String?
+  telegramConnectedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Short-lived, single-use Telegram connect session.
+// Telegram deep-link `start` payloads are limited to 64 chars ([A-Za-z0-9_-]),
+// so a self-contained signed JWT (carrying a UUID) does not fit. Instead the
+// start payload is a random unguessable nonce that maps to this server-side row;
+// expiry + consumedAt give replay/single-use protection equivalent to a signed token.
+model TelegramConnectSession {
+  id         String    @id @default(uuid())
+  nonce      String    @unique // the value embedded in the t.me/...?start=<nonce> deep link
+  userId     String
+  user       AppUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  source     String    @default("user_bot") // "user_bot" | "shared_bot"
+  issuedAt   DateTime  @default(now())
+  expiresAt  DateTime
+  consumedAt DateTime?
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model UserTechnology {
