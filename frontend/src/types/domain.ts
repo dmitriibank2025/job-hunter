@@ -20,6 +20,8 @@ export type WorkspaceUser = {
   dailyAutomationFullstackResumeBaseId?: string | null;
   dailyAutomationBackendResumeBaseId?: string | null;
   dailyAutomationFrontendResumeBaseId?: string | null;
+  searchExcludeRemote?: boolean;
+  blacklistedCompanies?: BlacklistedCompany[];
   limits?: PlanLimits;
   profile?: {
     fullName: string;
@@ -44,6 +46,12 @@ export type WorkspaceUser = {
     lastUsedAt?: string;
     isActive?: boolean;
   }>;
+};
+
+export type BlacklistedCompany = {
+  id: string;
+  name: string;
+  createdAt?: string;
 };
 
 export type AuthTokens = {
@@ -90,6 +98,10 @@ export type Job = {
   source?: string;
   url?: string;
   description?: string;
+  postedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  status?: string;
   matchScore?: number;
   analysis?: { recommendation?: string; reason?: string; matchedSkills?: string[]; missingSkills?: string[] };
   resumeVersions?: Array<{
@@ -112,6 +124,9 @@ export type Job = {
     appliedAt?: string;
     ignoredAt?: string;
     notes?: string;
+    rejectionReason?: string;
+    createdAt?: string;
+    updatedAt?: string;
   };
 };
 

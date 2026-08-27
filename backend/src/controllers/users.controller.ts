@@ -15,6 +15,8 @@ import {
     upsertUserProfile,
 } from "../services/user-workspace.service";
 import {
+    companyBlacklistSchema,
+    searchSettingsSchema,
     updateUserResumeBaseSchema,
     uploadedResumeFileSchema,
     userEducationsSchema,
@@ -24,6 +26,12 @@ import {
     userResumeBaseSchema,
     userTechnologySchema,
 } from "../validation";
+import {
+    addUserBlacklistedCompany,
+    listUserBlacklistedCompanies,
+    removeUserBlacklistedCompany,
+    updateUserSearchSettings,
+} from "../services/company-blacklist.service";
 
 export async function getUser(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
@@ -121,6 +129,41 @@ export async function updateDailyAutomation(req: Request, res: Response) {
             },
         },
     });
+}
+
+export async function getCompanyBlacklist(req: Request, res: Response) {
+    const userId = requiredParam(req, "id");
+    await requireUserAccess(req, userId);
+    const companies = await listUserBlacklistedCompanies(userId);
+
+    res.json({ success: true, companies });
+}
+
+export async function addCompanyToBlacklist(req: Request, res: Response) {
+    const userId = requiredParam(req, "id");
+    await requireUserAccess(req, userId);
+    const input = companyBlacklistSchema.parse(req.body ?? {});
+    const company = await addUserBlacklistedCompany(userId, input.name);
+
+    res.status(201).json({ success: true, company });
+}
+
+export async function deleteCompanyFromBlacklist(req: Request, res: Response) {
+    const userId = requiredParam(req, "id");
+    await requireUserAccess(req, userId);
+    const companyId = requiredParam(req, "companyId");
+    await removeUserBlacklistedCompany(userId, companyId);
+
+    res.json({ success: true });
+}
+
+export async function updateSearchSettings(req: Request, res: Response) {
+    const userId = requiredParam(req, "id");
+    await requireUserAccess(req, userId);
+    const input = searchSettingsSchema.parse(req.body ?? {});
+    const user = await updateUserSearchSettings(userId, input);
+
+    res.json({ success: true, searchExcludeRemote: user.searchExcludeRemote });
 }
 
 export async function createResumeBase(req: Request, res: Response) {

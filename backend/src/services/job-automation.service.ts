@@ -15,6 +15,7 @@ import {
     SearchPreferenceFilterStats,
     SearchPreferences,
 } from "./search-preferences.service";
+import { applyUserSearchFiltersToPreferences } from "./company-blacklist.service";
 import {
     failAutomationProgress,
     finishAutomationProgress,
@@ -308,7 +309,10 @@ export async function runJobAutomationWorkflowWithSource(options: {
     if (!userId) {
         throw new Error("userId is required for job automation workflow");
     }
-    const preferences = normalizeSearchPreferences(options.preferences);
+    // Fold the user's persisted company blacklist + exclude-remote toggle into the
+    // request preferences so both daily and manual searches honor them.
+    const mergedPreferences = await applyUserSearchFiltersToPreferences(userId, options.preferences);
+    const preferences = normalizeSearchPreferences(mergedPreferences);
     const selectedResumeBaseIds = new Map<string, string>();
     const requiredMatchScore = preferences.minMatchScore ?? REQUIRED_MATCH_SCORE;
     const collectedAt = new Date();
@@ -377,6 +381,8 @@ export async function runJobAutomationWorkflowWithSource(options: {
             output: emailPreferenceStats.output + (providerPreferenceStats?.output ?? 0),
             excludedKeyword: emailPreferenceStats.excludedKeyword + (providerPreferenceStats?.excludedKeyword ?? 0),
             titleStopword: emailPreferenceStats.titleStopword + (providerPreferenceStats?.titleStopword ?? 0),
+            excludedCompany: emailPreferenceStats.excludedCompany + (providerPreferenceStats?.excludedCompany ?? 0),
+            remote: emailPreferenceStats.remote + (providerPreferenceStats?.remote ?? 0),
             targetRole: emailPreferenceStats.targetRole + (providerPreferenceStats?.targetRole ?? 0),
             targetLocation: emailPreferenceStats.targetLocation + (providerPreferenceStats?.targetLocation ?? 0),
             requiredTech: emailPreferenceStats.requiredTech + (providerPreferenceStats?.requiredTech ?? 0),

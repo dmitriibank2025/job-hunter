@@ -106,4 +106,52 @@ describe("filterJobsBySearchPreferences", () => {
         });
         expect(result).toHaveLength(1);
     });
+
+    it("drops jobs from blacklisted companies (case/suffix insensitive)", () => {
+        const jobs = [
+            makeJob({ company: "Hire Feed" }),
+            makeJob({ company: "HireFeed Ltd." }),
+            makeJob({ company: "Quik Hire Staffing" }),
+            makeJob({ company: "Acme Corp" }),
+        ];
+        const { jobs: result, stats } = filterJobsBySearchPreferences(jobs, {
+            excludedCompanies: ["hire feed", "Quik Hire"],
+        });
+        expect(result).toHaveLength(1);
+        expect(result[0].company).toBe("Acme Corp");
+        expect(stats.excludedCompany).toBe(3);
+    });
+
+    it("does not drop companies when the blacklist is empty", () => {
+        const jobs = [makeJob({ company: "Hire Feed" })];
+        const { jobs: result } = filterJobsBySearchPreferences(jobs, { excludedCompanies: [] });
+        expect(result).toHaveLength(1);
+    });
+
+    it("excludes remote jobs when excludeRemote is set", () => {
+        const jobs = [
+            makeJob({ title: "Node.js Developer", location: "Remote" }),
+            makeJob({ title: "Node.js Developer (Remote)", location: "Tel Aviv" }),
+            makeJob({ title: "Node.js Developer", location: "Tel Aviv" }),
+        ];
+        const { jobs: result, stats } = filterJobsBySearchPreferences(jobs, { excludeRemote: true });
+        expect(result).toHaveLength(1);
+        expect(result[0].location).toBe("Tel Aviv");
+        expect(stats.remote).toBe(2);
+    });
+
+    it("keeps remote jobs when excludeRemote is not set", () => {
+        const jobs = [makeJob({ location: "Remote" })];
+        const { jobs: result } = filterJobsBySearchPreferences(jobs, {});
+        expect(result).toHaveLength(1);
+    });
+
+    it("normalizeSearchPreferences parses excludedCompanies and coerces excludeRemote", () => {
+        const result = normalizeSearchPreferences({
+            excludedCompanies: ["Hire Feed", " Hired "],
+            excludeRemote: true,
+        });
+        expect(result.excludedCompanies).toEqual(["Hire Feed", "Hired"]);
+        expect(result.excludeRemote).toBe(true);
+    });
 });

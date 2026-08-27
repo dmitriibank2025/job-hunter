@@ -294,8 +294,10 @@ export function validateResumeAgainstJob(job: Job, content: string): AtsResumeVa
         issues.push("Backend resume is missing Backend skills category.");
     }
 
-    const summaryMentionsFrontend = /(react|angular|vue|frontend|front-end|ui|ux)/i.test(summary);
-    if (summaryMentionsFrontend && !/(react|angular|vue|frontend|ui|ux|html|css)/i.test(skills)) {
+    // Word-bound the short tokens (ui, ux) so they don't match inside ordinary
+    // words like "building", "require", or "redux" and produce false positives.
+    const summaryMentionsFrontend = /\b(react|angular|vue|frontend|front-end|ui|ux)\b/i.test(summary);
+    if (summaryMentionsFrontend && !/\b(react|angular|vue|frontend|ui|ux|html|css)\b/i.test(skills)) {
         issues.push("Summary mentions frontend/UI experience but Skills does not reflect it.");
     }
 

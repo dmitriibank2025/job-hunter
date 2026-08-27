@@ -559,6 +559,10 @@ export async function getWorkspaceUser(userId: string) {
                 take: 50,
                 include: { job: true },
             },
+            blacklistedCompanies: {
+                orderBy: { createdAt: "desc" },
+                select: { id: true, name: true, createdAt: true },
+            },
         },
     });
 

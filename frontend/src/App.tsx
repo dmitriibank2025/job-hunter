@@ -30,6 +30,7 @@ import type {
   WorkspaceUser,
 } from "./types/domain";
 import { fileToBase64, splitDateRange, splitLines, splitTerms } from "./utils/form";
+import { buildBlockedSet, isBlockedCompany } from "./utils/company";
 
 declare global {
   interface Window {
@@ -124,7 +125,7 @@ export function App() {
   const [linkedinConnectionId, setLinkedinConnectionId] = useState("");
   const [manualJob, setManualJob] = useState({ url: "", title: "", company: "", location: "", description: "" });
   const [selectedJobId, setSelectedJobId] = useState("");
-  const [vacancyFilters, setVacancyFilters] = useState({ title: "", minScore: "0", status: "ALL" });
+  const [vacancyFilters, setVacancyFilters] = useState({ title: "", minScore: "0", status: "ALL", dateRange: "ALL", sortBy: "relevance" });
   const [statistics, setStatistics] = useState<JobStatistics | null>(null);
   const [appliedVacancies, setAppliedVacancies] = useState<AppliedVacancy[]>([]);
   const [rejectedResumeReport, setRejectedResumeReport] = useState<RejectedResumeReport | null>(null);
@@ -1093,6 +1094,40 @@ export function App() {
     setStatus(settings.enabled ? `Daily automation enabled at ${settings.time} ${settings.timezone}.` : "Daily automation disabled.");
   }
 
+  async function saveSearchExcludeRemote(excludeRemote: boolean) {
+    const userId = requireUserId();
+    await api(`/users/${userId}/search-settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ excludeRemote }),
+    });
+    const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
+    applyUser(loaded.user);
+    setStatus(excludeRemote ? "Remote vacancies will be excluded from searches." : "Remote vacancies will be included in searches.");
+  }
+
+  async function addBlacklistedCompany(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const userId = requireUserId();
+    await api(`/users/${userId}/blacklist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: trimmed }),
+    });
+    const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
+    applyUser(loaded.user);
+    setStatus(`"${trimmed}" added to the company blacklist.`);
+  }
+
+  async function removeBlacklistedCompany(companyId: string) {
+    const userId = requireUserId();
+    await api(`/users/${userId}/blacklist/${companyId}`, { method: "DELETE" });
+    const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
+    applyUser(loaded.user);
+    setStatus("Company removed from the blacklist.");
+  }
+
   async function analyzeMissingJobs() {
     if (!guardBusy("analyze missing vacancies")) return;
     const userId = requireUserId();
@@ -1126,27 +1161,56 @@ export function App() {
     }
   }
 
+  const blockedSet = useMemo(() => buildBlockedSet(user?.blacklistedCompanies), [user?.blacklistedCompanies]);
+
+  const jobDate = (job: Job) => {
+    const raw = job.postedAt || job.createdAt;
+    const t = raw ? new Date(raw).getTime() : 0;
+    return Number.isNaN(t) ? 0 : t;
+  };
+  const bestAts = (job: Job) =>
+    (job.resumeVersions || []).reduce((max, rv) => Math.max(max, rv.atsScore ?? -1), -1);
+
   const visibleJobs = useMemo(() => {
     const titleQuery = vacancyFilters.title.trim().toLowerCase();
     const minScore = Number(vacancyFilters.minScore || 0);
     const statusFilter = vacancyFilters.status || "ALL";
+    const dateRange = vacancyFilters.dateRange || "ALL";
+    const sortBy = vacancyFilters.sortBy || "relevance";
+    const cutoff = dateRange === "ALL" ? 0 : Date.now() - Number(dateRange) * 24 * 60 * 60 * 1000;
 
-    return jobs.filter((job) => {
+    const filtered = jobs.filter((job) => {
       const score = job.userMatch?.matchScore ?? job.matchScore ?? 0;
       const titleMatch = !titleQuery || `${job.title} ${job.company || ""}`.toLowerCase().includes(titleQuery);
       const isApplied = Boolean(job.userMatch?.appliedAt) || job.userMatch?.status === "APPLIED";
       const isRejected = job.userMatch?.status === "REJECTED";
       const isIgnored = Boolean(job.userMatch?.ignoredAt) || job.userMatch?.status === "IGNORED";
+      const isBlocked = isBlockedCompany(job.company, blockedSet);
       const statusMatch =
         statusFilter === "ALL" ||
         (statusFilter === "APPLIED" && isApplied) ||
         (statusFilter === "REJECTED" && isRejected) ||
         (statusFilter === "IGNORED" && isIgnored) ||
-        (statusFilter === "ACTIVE" && !isApplied && !isRejected && !isIgnored);
+        (statusFilter === "BLOCKED" && isBlocked) ||
+        (statusFilter === "ACTIVE" && !isApplied && !isRejected && !isIgnored && !isBlocked);
+      const dateMatch = cutoff === 0 || jobDate(job) >= cutoff;
 
-      return titleMatch && score >= minScore && statusMatch;
+      return titleMatch && score >= minScore && statusMatch && dateMatch;
     });
-  }, [jobs, vacancyFilters]);
+
+    const scoreOf = (job: Job) => job.userMatch?.matchScore ?? job.matchScore ?? 0;
+    const sorted = [...filtered];
+    switch (sortBy) {
+      case "newest": sorted.sort((a, b) => jobDate(b) - jobDate(a)); break;
+      case "oldest": sorted.sort((a, b) => jobDate(a) - jobDate(b)); break;
+      case "score": sorted.sort((a, b) => scoreOf(b) - scoreOf(a) || jobDate(b) - jobDate(a)); break;
+      case "ats": sorted.sort((a, b) => bestAts(b) - bestAts(a) || scoreOf(b) - scoreOf(a)); break;
+      case "company": sorted.sort((a, b) => (a.company || "~").localeCompare(b.company || "~")); break;
+      // "relevance" keeps the backend's composite ranking order.
+      default: break;
+    }
+    return sorted;
+  }, [jobs, vacancyFilters, blockedSet]);
 
   const selectedJob = useMemo(() => {
     if (selectedJobId) return jobs.find((job) => job.id === selectedJobId) || visibleJobs[0];
@@ -1329,9 +1393,18 @@ export function App() {
                   onGenerateResume={(jobId) => void generateJobDocument(jobId, "resume").catch(handleError)}
                   onGenerateCoverLetter={(jobId) => void generateJobDocument(jobId, "letter").catch(handleError)}
                   onGeneratePackage={(jobId) => void generateJobDocument(jobId, "package").catch(handleError)}
+                  onBlockCompany={(company) => void addBlacklistedCompany(company).catch(handleError)}
+                  blockedSet={blockedSet}
               />
           )}
-          {view === "companies" && <CompaniesView companies={companies} />}
+          {view === "companies" && (
+              <CompaniesView
+                  companies={companies}
+                  blacklistedCompanies={user?.blacklistedCompanies ?? []}
+                  onBlockCompany={(name) => void addBlacklistedCompany(name).catch(handleError)}
+                  onUnblockCompany={(companyId) => void removeBlacklistedCompany(companyId).catch(handleError)}
+              />
+          )}
           {view === "documents" && <DocumentsView documents={documents} onDownload={handleDownload} />}
           {view === "settings" && (
               <SettingsView
@@ -1352,6 +1425,7 @@ export function App() {
                   onRunDailyReport={() => void runDailyReport().catch(handleError)}
                   user={user}
                   onSaveDailyAutomation={(dailySettings) => void saveDailyAutomation(dailySettings).catch(handleError)}
+                  onSaveExcludeRemote={(excludeRemote) => void saveSearchExcludeRemote(excludeRemote).catch(handleError)}
               />
           )}
           {view === "admin" && <AdminView adminUsers={adminUsers} onLoadUsers={() => void loadAdminUsers().catch(handleError)} />}
