@@ -116,6 +116,8 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
              output: 0,
              excludedKeyword: 0,
              titleStopword: 0,
+             excludedCompany: 0,
+             remote: 0,
              targetRole: 0,
              targetLocation: 0,
              requiredTech: 0,
@@ -173,6 +175,8 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
                  preferenceFilterStats.output += stats.output;
                  preferenceFilterStats.excludedKeyword += stats.excludedKeyword;
                  preferenceFilterStats.titleStopword += stats.titleStopword;
+                 preferenceFilterStats.excludedCompany += stats.excludedCompany;
+                 preferenceFilterStats.remote += stats.remote;
                  preferenceFilterStats.targetRole += stats.targetRole;
                  preferenceFilterStats.targetLocation += stats.targetLocation;
                  preferenceFilterStats.requiredTech += stats.requiredTech;
@@ -191,9 +195,9 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
                  });
                  allJobs.push(...filtered);
                  providerResults[provider.source] = {success: filtered.length, failed: 0};
-                 if (stats.excludedKeyword || stats.titleStopword || stats.targetRole || stats.targetLocation || stats.requiredTech || stats.dateRange) {
+                 if (stats.excludedKeyword || stats.titleStopword || stats.excludedCompany || stats.remote || stats.targetRole || stats.targetLocation || stats.requiredTech || stats.dateRange) {
                      console.log(
-                         `  │  Preference skips: excluded=${stats.excludedKeyword}, titleStopword=${stats.titleStopword}, role=${stats.targetRole}, location=${stats.targetLocation}, tech=${stats.requiredTech}, date=${stats.dateRange}`,
+                         `  │  Preference skips: excluded=${stats.excludedKeyword}, titleStopword=${stats.titleStopword}, blacklistCompany=${stats.excludedCompany}, remote=${stats.remote}, role=${stats.targetRole}, location=${stats.targetLocation}, tech=${stats.requiredTech}, date=${stats.dateRange}`,
                      );
                  }
              } catch (error) {

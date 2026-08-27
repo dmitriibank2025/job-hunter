@@ -778,10 +778,76 @@ input[type="file"] { cursor: pointer; }
 
 .filter-row {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) minmax(160px, 220px);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   align-items: end;
 }
+
+/* ─── VACANCY STATUS BAR (clickable count chips) ─────────── */
+.vacancy-status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 14px;
+}
+.status-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-sm);
+  background: var(--glass-0);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--t-fast) var(--smooth);
+}
+.status-pill:hover { background: var(--glass-2); border-color: var(--border-2); }
+.status-pill b { font-size: 15px; color: var(--text-primary); }
+.status-pill span { font-size: 12px; }
+.status-pill.is-selected { border-color: var(--accent); background: var(--glass-2); }
+.status-pill.is-active.is-selected    { border-color: var(--blue); }
+.status-pill.is-applied.is-selected   { border-color: var(--green); }
+.status-pill.is-rejected.is-selected  { border-color: var(--red); }
+.status-pill.is-ignored.is-selected   { border-color: var(--amber); }
+.status-pill.is-blocked.is-selected   { border-color: var(--red); }
+
+/* ─── JOB CARD TAGS / BADGES ─────────────────────────────── */
+.job-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+.job-tags .badge.is-active   { background: var(--blue-dim);  color: var(--blue);  border: 1px solid rgba(100,160,240,0.3); }
+.job-tags .badge.is-applied  { background: var(--green-dim); color: var(--green); border: 1px solid rgba(100,200,160,0.3); }
+.job-tags .badge.is-ignored  { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(220,180,100,0.3); }
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  border: 1px solid var(--border-0);
+  background: var(--glass-0);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.tag-source { text-transform: uppercase; letter-spacing: 0.03em; }
+.tag-ats.is-high { color: var(--green); border-color: rgba(100,200,160,0.3); }
+.tag-ats.is-mid  { color: var(--amber); border-color: rgba(220,180,100,0.3); }
+.tag-ats.is-low  { color: var(--red);   border-color: rgba(220,100,100,0.3); }
+.job-reject-note {
+  margin: 4px 0 2px;
+  font-size: 12px;
+  color: var(--red);
+}
+.job-row.is-blocked-row { opacity: 0.62; }
+.job-row.is-blocked-row .job-title { text-decoration: line-through; text-decoration-color: rgba(220,100,100,0.5); }
+.job-row.is-rejected-row { opacity: 0.72; }
 
 /* ─── VIEW TRANSITIONS ───────────────────────────────────── */
 .view { display: none; flex-direction: column; gap: 20px; }
@@ -1535,6 +1601,75 @@ input[type="file"] { cursor: pointer; }
   color: var(--text-primary);
 }
 
+/* ─── COMPANY BLACKLIST ──────────────────────────────────── */
+.blacklist-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  margin: 8px 0 12px;
+}
+
+.blacklist-input-row input {
+  flex: 1;
+  min-height: 38px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-xs);
+  background: var(--glass-0);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.blacklist-input-row input:focus {
+  outline: none;
+  border-color: var(--border-2);
+  background: var(--glass-2);
+}
+
+.blacklist-input-row .btn {
+  white-space: nowrap;
+}
+
+.blacklist-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.blacklist-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 5px 12px;
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-xs);
+  background: var(--glass-0);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.blacklist-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: var(--glass-2);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all var(--t-fast) var(--smooth);
+}
+
+.blacklist-chip button:hover {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
 /* ─── RESUME BASE ────────────────────────────────────────── */
 .resume-base-grid {
   display: grid;
@@ -2161,6 +2296,24 @@ input[type="file"] { cursor: pointer; }
 .company-card.is-done    { border-color: rgba(100,200,160,0.18); }
 .company-card.is-active  { border-color: rgba(100,160,240,0.18); }
 .company-card.is-timeout { border-color: rgba(220,180,100,0.18); }
+.company-card.is-blocked {
+  border-color: rgba(220,100,100,0.32);
+  background: var(--red-dim);
+}
+.company-card.is-blocked strong { text-decoration: line-through; text-decoration-color: rgba(220,100,100,0.5); }
+
+.company-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.company-card-actions .btn {
+  min-height: 26px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+}
+.badge.is-blocked { background: var(--red-dim); color: var(--red); border: 1px solid rgba(220,100,100,0.3); }
 
 /* ─── DOCUMENTS ──────────────────────────────────────────── */
 .document-row {

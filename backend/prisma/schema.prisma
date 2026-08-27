@@ -58,8 +58,10 @@ model AppUser {
   dailyAutomationFullstackResumeBaseId String?
   dailyAutomationBackendResumeBaseId   String?
   dailyAutomationFrontendResumeBaseId  String?
+  searchExcludeRemote    Boolean @default(false)
 
   profile               UserProfile?
+  blacklistedCompanies  UserBlacklistedCompany[]
   technologies          UserTechnology[]
   experiences           UserExperience[]
   educations            UserEducation[]
@@ -77,12 +79,28 @@ model AppUser {
   rejectionRecords      RejectionRecord[]
   promptRules           PromptRule[]
   telegramConnectSessions TelegramConnectSession[]
+  experienceChunks      ExperienceChunk[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([plan, status])
   @@index([createdAt])
+}
+
+/// Candidate experience corpus for RAG grounding + the agent's search_experience tool.
+/// `embedding` is a pgvector column (text-embedding-3-small, 1536 dims); queried via
+/// raw SQL cosine distance (`<=>`), so it is typed Unsupported for Prisma.
+model ExperienceChunk {
+  id        String                       @id @default(uuid())
+  userId    String
+  user      AppUser                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  source    String
+  text      String
+  embedding Unsupported("vector(1536)")?
+  createdAt DateTime                     @default(now())
+
+  @@index([userId])
 }
 
 model UserGmailAccount {
@@ -493,6 +511,20 @@ model CompanyPriorityTarget {
   @@index([active, priority])
   @@index([nextCheckAt])
   @@index([lastFoundAt])
+}
+
+// Per-user blacklist of companies whose vacancies are never collected, analyzed,
+// or turned into resumes — both in the daily automation and manual searches.
+model UserBlacklistedCompany {
+  id             String   @id @default(uuid())
+  userId         String
+  user           AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  normalizedName String
+  createdAt      DateTime @default(now())
+
+  @@unique([userId, normalizedName])
+  @@index([userId])
 }
 
 // ─── PROMPT LEARNING ──────────────────────────────────────────────────────────

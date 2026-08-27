@@ -4,6 +4,8 @@ export type SearchPreferences = {
     requiredTech?: string[];
     excludedKeywords?: string[];
     excludedTitleKeywords?: string[];
+    excludedCompanies?: string[];
+    excludeRemote?: boolean;
     dateRangeDays?: number;
     gmailScanDays?: number;
     minMatchScore?: number;
@@ -22,6 +24,8 @@ export type SearchPreferenceFilterStats = {
     output: number;
     excludedKeyword: number;
     titleStopword: number;
+    excludedCompany: number;
+    remote: number;
     targetRole: number;
     targetLocation: number;
     requiredTech: number;
@@ -70,6 +74,43 @@ export const SUGGESTED_EXCLUDED_TITLE_KEYWORDS: string[] = [
 
 function normalizeTerm(value: string): string {
     return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+// Normalize a company name for blacklist matching: drop common legal/entity
+// suffixes and punctuation so "Hire Feed", "HireFeed Ltd." and "hire feed"
+// all collapse to the same key. Kept in sync with the blacklist service.
+export function normalizeCompanyName(value?: string | null): string {
+    return (value ?? "")
+        .replace(/\b(israel|ltd|limited|inc|corp|corporation|technologies|technology|staffing|recruiting|recruitment)\b/gi, "")
+        .replace(/[^a-z0-9]+/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+}
+
+function isBlacklistedCompany(company: string | null | undefined, blacklist: string[]): boolean {
+    if (!blacklist.length) return false;
+    const normalizedCompany = normalizeCompanyName(company);
+    if (!normalizedCompany) return false;
+    // Also compare with all whitespace removed so "HireFeed" and "Hire Feed"
+    // collapse to the same token.
+    const compactCompany = normalizedCompany.replace(/\s+/g, "");
+
+    return blacklist.some((entry) => {
+        const normalizedEntry = normalizeCompanyName(entry);
+        if (!normalizedEntry) return false;
+        const compactEntry = normalizedEntry.replace(/\s+/g, "");
+        // Match on containment (either direction) so "Hire Feed" also catches
+        // "Hire Feed Global", "HireFeed Ltd.", etc.
+        return compactCompany.includes(compactEntry) || compactEntry.includes(compactCompany);
+    });
+}
+
+function isRemoteJob(job: SearchableJob): boolean {
+    const location = normalizeTerm(job.location ?? "");
+    if (/\bremote\b/.test(location)) return true;
+    // Titles frequently carry "(Remote)" when the location field is generic.
+    return /\bfully remote\b|\b100% remote\b|\bremote\b/.test(normalizeTerm(job.title));
 }
 
 export function parsePreferenceTerms(value?: string | string[] | null): string[] {
@@ -174,11 +215,15 @@ export function filterJobsBySearchPreferences<T extends SearchableJob>(
     const requiredTech = preferences.requiredTech ?? [];
     const excludedKeywords = preferences.excludedKeywords ?? [];
     const titleStopwords = preferences.excludedTitleKeywords ?? [];
+    const excludedCompanies = preferences.excludedCompanies ?? [];
+    const excludeRemote = Boolean(preferences.excludeRemote);
     const stats: SearchPreferenceFilterStats = {
         input: jobs.length,
         output: 0,
         excludedKeyword: 0,
         titleStopword: 0,
+        excludedCompany: 0,
+        remote: 0,
         targetRole: 0,
         targetLocation: 0,
         requiredTech: 0,
@@ -198,6 +243,18 @@ export function filterJobsBySearchPreferences<T extends SearchableJob>(
         // even if the job would otherwise match targetRoles/requiredTech.
         if (titleStopwords.length && matchesAny(job.title, titleStopwords)) {
             stats.titleStopword++;
+            continue;
+        }
+
+        // Blacklisted companies (e.g. staffing spam like "Hired", "Hire Feed") are
+        // dropped before anything else — never analyzed, never turned into a resume.
+        if (isBlacklistedCompany(job.company, excludedCompanies)) {
+            stats.excludedCompany++;
+            continue;
+        }
+
+        if (excludeRemote && isRemoteJob(job)) {
+            stats.remote++;
             continue;
         }
 
@@ -236,6 +293,8 @@ export function normalizeSearchPreferences(input: SearchPreferences = {}): Searc
         requiredTech: parsePreferenceTerms(input.requiredTech),
         excludedKeywords: parsePreferenceTerms(input.excludedKeywords),
         excludedTitleKeywords: parsePreferenceTerms(input.excludedTitleKeywords),
+        excludedCompanies: parsePreferenceTerms(input.excludedCompanies),
+        excludeRemote: Boolean(input.excludeRemote),
         dateRangeDays: Number.isFinite(Number(input.dateRangeDays)) && Number(input.dateRangeDays) > 0
             ? Number(input.dateRangeDays)
             : undefined,

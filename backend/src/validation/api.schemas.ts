@@ -57,6 +57,8 @@ export const automationRunSchema = z.object({
         requiredTech: z.array(z.string()).optional(),
         excludedKeywords: z.array(z.string()).optional(),
         excludedTitleKeywords: z.array(z.string()).optional(),
+        excludedCompanies: z.array(z.string()).optional(),
+        excludeRemote: z.boolean().optional(),
         dateRangeDays: z.coerce.number().int().positive().optional(),
         gmailScanDays: z.coerce.number().int().positive().optional(),
         minMatchScore: z.coerce.number().min(0).max(100).optional(),
@@ -189,6 +191,14 @@ export const userDailyAutomationSchema = z.object({
         BACKEND: z.string().trim().uuid().optional(),
         FRONTEND: z.string().trim().uuid().optional(),
     }).optional(),
+});
+
+export const companyBlacklistSchema = z.object({
+    name: z.string().trim().min(1, "Company name is required.").max(200),
+});
+
+export const searchSettingsSchema = z.object({
+    excludeRemote: z.boolean(),
 });
 
 export const REJECTION_REASONS = [

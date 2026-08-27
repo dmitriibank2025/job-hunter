@@ -949,6 +949,8 @@ All non-editable lines must remain semantically and stylistically identical to t
 2. ## Summary
    Use the heading exactly as "## Summary".
    Write one compact paragraph of maximum 3 sentences immediately after the header.
+   The Summary paragraph MUST be between 300 and 350 characters long (count characters, not words). If it is shorter, add source-supported scope, competencies, or context; if it is longer, trim adjectives and filler — never invent facts to reach the length.
+   When the source resume (summary or bullets) contains a time-based statement (e.g. "in 2025", "within 4 months"), include at least one in the Summary. When the source contains an improvement metric (e.g. "40 to 10 minutes", a percentage, a monetary amount), include at least one in the Summary. Never fabricate a date, duration, or metric that is not in the source resume; if the source has none, omit it rather than invent one.
    Sentence 1 must start with this exact fixed base role label: "${fixedRoleLabel}" and include years of experience if the source resume supports them.
    Sentence 2 should name 3-4 most relevant competencies for this vacancy using only source-supported wording.
    Sentence 3 should show ownership, scope, or the strongest supported differentiator from the source resume.
@@ -956,6 +958,8 @@ All non-editable lines must remain semantically and stylistically identical to t
    Do not prepend seniority such as "Senior", "Principal", "Lead", or "Junior" unless it is already part of the fixed base role label.
    Match the vacancy direction through supported keywords and bullet emphasis, not by changing the fixed base role label.
    The summary must be consistent with the target title line and Skills section.
+   If you add a third sentence to reach the 300–350 character length, it MUST use only terms that already appear in the Skills section. Do NOT introduce a new keyword, technology, methodology, or label (for example "SaaS", a framework, or a domain word) in the Summary unless that exact term is present in the Skills section — otherwise ATS flags a summary/Skills mismatch and deducts score.
+   For backend and frontend targets, do not let the Summary mention the opposite discipline (e.g. a backend summary must not foreground React/frontend/UI wording) unless the Skills section explicitly lists it.
    Do not use phrases like "I am passionate about", "responsible for", or any banned stock language.
    CRITICAL: Do NOT mention any technology or keyword in the Summary unless it also appears in the Skills section. ATS systems flag keywords that appear in Summary but are missing from Skills — this causes automatic score deductions.
 
@@ -978,8 +982,10 @@ All non-editable lines must remain semantically and stylistically identical to t
    For each position:
    ### YYYY – YYYY | Job Title | Company (Location)
    Project name line when present in the source resume.
-   - 3–6 bullet points for recent/relevant roles
-   - 2–4 bullet points for older/less relevant roles
+   - 3–5 bullet points for the most recent/relevant role
+   - 2–3 bullet points for older/less relevant roles
+   - Every bullet MUST be between 60 and 180 characters long. Expand a too-short bullet with source-supported detail (mechanism, tool, scope); trim or split a too-long bullet without inventing facts.
+   - Preserve the source bullets' time-based statements and improvement metrics when editing — do not drop or weaken a real date or number, and do not add ones the source lacks.
    Technologies: comma-separated list
    The Technologies line must be consistent with the bullets above it:
    - Do not list a technology unless at least one bullet in that same position explicitly supports using it.
@@ -1008,6 +1014,8 @@ If the base resume uses slightly different spacing or markdown conventions, pref
 as long as the required sections remain readable.
 
 SELF-CHECK BEFORE FINALIZING
+- Confirm the Summary is between 300 and 350 characters, and — when the source supports it — contains at least one time-based statement and one improvement metric.
+- Confirm each experience role has the required bullet count (recent role 3–5, older roles 2–3) and that every bullet is between 60 and 180 characters.
 - Confirm there are no duplicated or near-duplicated bullets.
 - Confirm every promoted technology in Summary and top bullets is supported by Skills and source experience.
 - Confirm no claims were introduced that are absent from the source resume.
@@ -1112,6 +1120,7 @@ async function callOpenAIForText(
     jobId: string,
     userId: string,
 ): Promise<string> {
+    const startedAt = Date.now();
     const response = await getOpenAIClient().chat.completions.create({
         model: MODEL,
         temperature: 0.25,
@@ -1124,12 +1133,28 @@ async function callOpenAIForText(
             { role: "user", content: prompt },
         ],
     });
+    const latencyMs = Date.now() - startedAt;
 
     if (response.usage?.total_tokens) {
+        logger.info(
+            {
+                scope,
+                jobId,
+                model: MODEL,
+                latencyMs,
+                promptTokens: response.usage.prompt_tokens,
+                completionTokens: response.usage.completion_tokens,
+                totalTokens: response.usage.total_tokens,
+            },
+            "[generation] OpenAI call completed",
+        );
         await recordUsageEvent(userId, "OPENAI_TOKENS", response.usage.total_tokens, {
             scope,
             jobId,
             model: MODEL,
+            latencyMs,
+            promptTokens: response.usage.prompt_tokens,
+            completionTokens: response.usage.completion_tokens,
         }).catch((error: unknown) => {
             logger.warn(
                 { error, scope, jobId, userId, model: MODEL },

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { downloadStorageFile } from "../../api/client";
 import type { Job } from "../../types/domain";
 import { shortText } from "../../utils/form";
+import { isBlockedCompany } from "../../utils/company";
 import { REJECTION_REASONS } from "../app/types";
 
 function inferredPdfPath(filePath?: string, pdfFilePath?: string | null) {
@@ -17,6 +18,20 @@ function atsClass(score?: number | null) {
   return "is-low";
 }
 
+function formatDate(value?: string) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(d);
+}
+
+const REJECTION_LABEL = new Map<string, string>(REJECTION_REASONS.map((r) => [r.value, r.label]));
+
+function bestAtsScore(job: Job): number | null {
+  const scores = (job.resumeVersions || []).map((rv) => rv.atsScore).filter((v): v is number => typeof v === "number");
+  return scores.length ? Math.max(...scores) : null;
+}
+
 export function JobsList({
   jobs,
   onMark,
@@ -25,6 +40,8 @@ export function JobsList({
   onGenerateResume,
   onGenerateCoverLetter,
   onGeneratePackage,
+  onBlockCompany,
+  blockedSet,
 }: {
   jobs: Job[];
   onMark?: (jobId: string, patch: { applied?: boolean; ignored?: boolean; status?: "REJECTED"; notes?: string; rejectionReason?: string }) => Promise<void>;
@@ -33,6 +50,8 @@ export function JobsList({
   onGenerateResume?: (jobId: string) => void;
   onGenerateCoverLetter?: (jobId: string) => void;
   onGeneratePackage?: (jobId: string) => void;
+  onBlockCompany?: (company: string) => void;
+  blockedSet?: Set<string>;
 }) {
   const [rejectingJobId, setRejectingJobId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("OTHER");
@@ -40,19 +59,42 @@ export function JobsList({
   if (!jobs.length) return <div className="empty">No jobs found.</div>;
   return <div className="jobs-list">{jobs.map((job) => {
     const score = job.userMatch?.matchScore ?? job.matchScore;
-    const isApplied = Boolean(job.userMatch?.appliedAt);
-    const isIgnored = Boolean(job.userMatch?.ignoredAt);
+    const isApplied = Boolean(job.userMatch?.appliedAt) || job.userMatch?.status === "APPLIED";
+    const isIgnored = Boolean(job.userMatch?.ignoredAt) || job.userMatch?.status === "IGNORED";
     const isRejected = job.userMatch?.status === "REJECTED";
+    const isBlocked = isBlockedCompany(job.company, blockedSet ?? new Set());
     const hasResume = Boolean(job.resumeVersions?.length);
     const hasLetter = Boolean(job.coverLetters?.length);
     const missingSkills = (job.userMatch?.analysis?.missingSkills || job.analysis?.missingSkills || []).slice(0, 8);
     const recommendation = job.userMatch?.analysis?.recommendation || job.analysis?.recommendation;
     const download = onDownload || downloadStorageFile;
+    const postedAt = formatDate(job.postedAt);
+    const addedAt = formatDate(job.createdAt);
+    const ats = bestAtsScore(job);
+    const rejectionReason = job.userMatch?.rejectionReason;
+    const statusBadge = isRejected
+      ? { label: "Rejected", cls: "is-rejected" }
+      : isApplied
+        ? { label: "Applied", cls: "is-applied" }
+        : isIgnored
+          ? { label: "Ignored", cls: "is-ignored" }
+          : { label: "Active", cls: "is-active" };
     return (
-      <article className={`job-row ${isApplied ? "is-applied" : ""} ${isIgnored ? "is-ignored" : ""}`} key={job.id}>
+      <article className={`job-row ${isApplied ? "is-applied" : ""} ${isIgnored ? "is-ignored" : ""} ${isRejected ? "is-rejected-row" : ""} ${isBlocked ? "is-blocked-row" : ""}`} key={job.id}>
         <div className="job-main">
           <div className="job-title">{job.title || "Untitled job"}</div>
-          <div className="job-meta">{[job.company || "Unknown company", job.location || "Unknown location", job.source || "UNKNOWN", isRejected ? "Rejected" : isApplied ? "Applied" : isIgnored ? "Ignored" : ""].filter(Boolean).join(" | ")}</div>
+          <div className="job-meta">{[job.company || "Unknown company", job.location || "Unknown location"].filter(Boolean).join("  ·  ")}</div>
+          <div className="job-tags">
+            <span className={`badge ${statusBadge.cls}`}>{statusBadge.label}</span>
+            {isBlocked && <span className="badge is-blocked">Blocked company</span>}
+            {job.source && <span className="tag tag-source">{job.source}</span>}
+            {ats != null && <span className={`tag tag-ats ${atsClass(ats)}`}>ATS {ats}</span>}
+            {postedAt && <span className="tag tag-date" title="Posted">📅 {postedAt}</span>}
+            {addedAt && <span className="tag tag-date" title="Added to your list">➕ {addedAt}</span>}
+          </div>
+          {isRejected && rejectionReason && (
+            <div className="job-reject-note">Rejected: {REJECTION_LABEL.get(rejectionReason) || rejectionReason}{job.userMatch?.notes && job.userMatch.notes !== rejectionReason ? ` — ${job.userMatch.notes}` : ""}</div>
+          )}
           <div className="job-desc">{shortText(job.description || job.analysis?.reason || "")}</div>
           {score !== undefined && score < 70 && missingSkills.length > 0 && (
             <div className="missing-skills">
@@ -108,6 +150,16 @@ export function JobsList({
               </span>
             )}
             {isRejected && <span className="badge is-rejected">Rejected</span>}
+            {onBlockCompany && job.company && !isBlocked && (
+              <button
+                className="btn btn-danger"
+                type="button"
+                title={`Blacklist ${job.company} — stop collecting and generating resumes for this company`}
+                onClick={() => onBlockCompany(job.company as string)}
+              >
+                Block Company
+              </button>
+            )}
           </div>
         </div>
       </article>

@@ -2,11 +2,14 @@ import { Field, SectionHead } from "../../components/ui";
 import type { Job, ResumeBase } from "../../types/domain";
 import { JobsList } from "./JobsList";
 import { shortText } from "../../utils/form";
+import { isBlockedCompany } from "../../utils/company";
 
 type VacancyFilters = {
   title: string;
   minScore: string;
   status: string;
+  dateRange: string;
+  sortBy: string;
 };
 
 type VacanciesViewProps = {
@@ -24,7 +27,27 @@ type VacanciesViewProps = {
   onGenerateResume: (jobId: string) => void;
   onGenerateCoverLetter: (jobId: string) => void;
   onGeneratePackage: (jobId: string) => void;
+  onBlockCompany: (company: string) => void;
+  blockedSet: Set<string>;
 };
+
+const DATE_RANGE_OPTIONS = [
+  { label: "Any date", value: "ALL" },
+  { label: "Last 24 hours", value: "1" },
+  { label: "Last 3 days", value: "3" },
+  { label: "Last 7 days", value: "7" },
+  { label: "Last 14 days", value: "14" },
+  { label: "Last 30 days", value: "30" },
+];
+
+const SORT_OPTIONS = [
+  { label: "Best match (default)", value: "relevance" },
+  { label: "Newest first", value: "newest" },
+  { label: "Oldest first", value: "oldest" },
+  { label: "Match score", value: "score" },
+  { label: "Resume ATS score", value: "ats" },
+  { label: "Company A–Z", value: "company" },
+];
 
 function JobMatchDetail({
   job,
@@ -119,27 +142,74 @@ export function VacanciesView({
   onGenerateResume,
   onGenerateCoverLetter,
   onGeneratePackage,
+  onBlockCompany,
+  blockedSet,
 }: VacanciesViewProps) {
   const missingAnalysisCount = jobs.filter((job) => (job.userMatch?.matchScore ?? job.matchScore) == null).length;
   const missingResumeCount = visibleJobs.filter((job) => !job.resumeVersions?.length).length;
 
+  const counts = jobs.reduce(
+    (acc, job) => {
+      const applied = Boolean(job.userMatch?.appliedAt) || job.userMatch?.status === "APPLIED";
+      const rejected = job.userMatch?.status === "REJECTED";
+      const ignored = Boolean(job.userMatch?.ignoredAt) || job.userMatch?.status === "IGNORED";
+      const blocked = isBlockedCompany(job.company, blockedSet);
+      if (applied) acc.applied++;
+      else if (rejected) acc.rejected++;
+      else if (ignored) acc.ignored++;
+      else if (blocked) acc.blocked++;
+      else acc.active++;
+      return acc;
+    },
+    { active: 0, applied: 0, rejected: 0, ignored: 0, blocked: 0 },
+  );
+
+  const statusChips: Array<{ key: string; label: string; count: number; cls: string }> = [
+    { key: "ALL", label: "All", count: jobs.length, cls: "" },
+    { key: "ACTIVE", label: "Active", count: counts.active, cls: "is-active" },
+    { key: "APPLIED", label: "Applied", count: counts.applied, cls: "is-applied" },
+    { key: "REJECTED", label: "Rejected", count: counts.rejected, cls: "is-rejected" },
+    { key: "IGNORED", label: "Ignored", count: counts.ignored, cls: "is-ignored" },
+    { key: "BLOCKED", label: "Blocked", count: counts.blocked, cls: "is-blocked" },
+  ];
+
   return (
     <section className="view is-active">
       <section className="surface">
-        <SectionHead title="Found Vacancies" subtitle={`${visibleJobs.length} of ${jobs.length} user vacancies shown`} />
+        <SectionHead
+          title="Found Vacancies"
+          subtitle={`All vacancies collected for your account (providers, email, manual). Showing ${visibleJobs.length} of ${jobs.length}.`}
+        />
+
+        <div className="vacancy-status-bar">
+          {statusChips.map((chip) => (
+            <button
+              key={chip.key}
+              type="button"
+              className={`status-pill ${chip.cls} ${vacancyFilters.status === chip.key ? "is-selected" : ""}`}
+              onClick={() => setVacancyFilters({ ...vacancyFilters, status: chip.key })}
+            >
+              <b>{chip.count}</b>
+              <span>{chip.label}</span>
+            </button>
+          ))}
+        </div>
+
         <div className="filter-row">
           <Field label="Title / Company" value={vacancyFilters.title} onChange={(value) => setVacancyFilters({ ...vacancyFilters, title: value })} />
-          <Field label="Minimum Match" value={vacancyFilters.minScore} onChange={(value) => setVacancyFilters({ ...vacancyFilters, minScore: value })} />
           <label className="field">
-            <span>Status</span>
-            <select value={vacancyFilters.status} onChange={(event) => setVacancyFilters({ ...vacancyFilters, status: event.target.value })}>
-              <option value="ALL">All</option>
-              <option value="ACTIVE">Active</option>
-              <option value="APPLIED">Applied</option>
-              <option value="REJECTED">Rejected</option>
-              <option value="IGNORED">Ignored</option>
+            <span>Added / posted</span>
+            <select value={vacancyFilters.dateRange} onChange={(event) => setVacancyFilters({ ...vacancyFilters, dateRange: event.target.value })}>
+              {DATE_RANGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </label>
+          <label className="field">
+            <span>Sort by</span>
+            <select value={vacancyFilters.sortBy} onChange={(event) => setVacancyFilters({ ...vacancyFilters, sortBy: event.target.value })}>
+              {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
+          <Field label="Minimum Match" value={vacancyFilters.minScore} onChange={(value) => setVacancyFilters({ ...vacancyFilters, minScore: value })} />
         </div>
         {missingAnalysisCount > 0 && (
           <div className="inline-actions">
@@ -159,6 +229,8 @@ export function VacanciesView({
           onGenerateResume={onGenerateResume}
           onGenerateCoverLetter={onGenerateCoverLetter}
           onGeneratePackage={onGeneratePackage}
+          onBlockCompany={onBlockCompany}
+          blockedSet={blockedSet}
         />
       </section>
       <JobMatchDetail
