@@ -104,6 +104,15 @@ export type ResumeBase = {
   target: string;
   targetTitle?: string;
   content: string;
+  mode?: "LINKED" | "UPLOADED_SNAPSHOT" | "DETACHED";
+  sourceRevision?: number | null;
+  renderStatus?: "CURRENT" | "STALE" | "PROCESSING" | "FAILED";
+  definition?: {
+    version?: number;
+    target?: string;
+    targetTitle?: string | null;
+    template?: "ATS" | "MODERN" | "COMPACT";
+  };
   pdfFilePath?: string | null;
   isDefault?: boolean;
 };

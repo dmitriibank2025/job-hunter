@@ -211,6 +211,14 @@ export async function refreshCandidateFactsInTransaction(
       skipDuplicates: true,
     });
   }
+  await tx.userResumeBase.updateMany({
+    where: {
+      userId,
+      mode: "LINKED",
+      OR: [{ sourceRevision: null }, { sourceRevision: { lt: user.candidateRevision } }],
+    },
+    data: { renderStatus: "STALE" },
+  });
   return user.candidateRevision;
 }
 

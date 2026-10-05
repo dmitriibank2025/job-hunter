@@ -367,7 +367,7 @@ export function App() {
         name: defaultResume.name,
         target: defaultResume.target,
         targetTitle: defaultResume.targetTitle || "",
-        template: "ATS",
+        template: defaultResume.definition?.template || "ATS",
       });
       setResumePreview(defaultResume.content);
     } else {

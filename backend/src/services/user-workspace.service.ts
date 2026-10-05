@@ -19,6 +19,10 @@ import { BasicResumePdfTemplate, createBasicResumePdf } from "./resume-pdf.servi
 import { convertDocxToPdf, createStyledResumeDocx } from "./docx.service";
 import { invalidateMasterSkillsCache } from "./job-analyzer.service";
 import { refreshCandidateFactsInTransaction } from "./candidate-facts.service";
+import {
+    buildResumeBaseDefinition,
+    resolveResumeBaseUpdate,
+} from "./resume-base-lifecycle.service";
 
 export type PlanLimit = {
     vacanciesPerDay: number;
@@ -547,6 +551,7 @@ export async function saveUploadedResume(
         data: { isDefault: false },
     });
 
+    const target = inferResumeTargetFromText(fileName);
     const resumeBase = await prisma.userResumeBase.create({
         data: {
             userId,
@@ -554,10 +559,14 @@ export async function saveUploadedResume(
             // Infer the target from the FILE NAME only — the resume header often
             // says "Frontend-Focused Full Stack…", which would mis-classify a
             // Frontend resume as FULLSTACK. The file name is the explicit signal.
-            target: inferResumeTargetFromText(fileName),
+            target,
             targetTitle: "Uploaded Resume",
             content: textContent,
             sourceFilePath: relativePath,
+            mode: "UPLOADED_SNAPSHOT",
+            sourceRevision: null,
+            definition: buildResumeBaseDefinition({ target, targetTitle: "Uploaded Resume" }),
+            renderStatus: "CURRENT",
             isDefault: true,
         },
     });
@@ -944,30 +953,48 @@ export async function createUserResumeBase(userId: string, input: {
         targetTitle: input.targetTitle,
     });
 
-    if (input.isDefault) {
-        await prisma.userResumeBase.updateMany({
-            where: { userId },
-            data: { isDefault: false },
+    const definition = buildResumeBaseDefinition({
+        target,
+        targetTitle: input.targetTitle,
+        template: input.template,
+    });
+    const resumeBase = await prisma.$transaction(async tx => {
+        if (input.isDefault) {
+            await tx.userResumeBase.updateMany({
+                where: { userId },
+                data: { isDefault: false },
+            });
+        }
+        return tx.userResumeBase.create({
+            data: {
+                userId,
+                name: input.name,
+                target,
+                targetTitle: input.targetTitle,
+                content,
+                mode: "LINKED",
+                sourceRevision: user.candidateRevision,
+                definition,
+                renderStatus: "PROCESSING",
+                isDefault: Boolean(input.isDefault),
+            },
         });
-    }
-
-    const resumeBase = await prisma.userResumeBase.create({
-        data: {
-            userId,
-            name: input.name,
-            target,
-            targetTitle: input.targetTitle,
-            content,
-            isDefault: Boolean(input.isDefault),
-        },
     });
 
-    const pdfFilePath = await createResumeBasePdf(userId, resumeBase.id, content, input.template);
-
-    return {
-        ...resumeBase,
-        pdfFilePath,
-    };
+    try {
+        const pdfFilePath = await createResumeBasePdf(userId, resumeBase.id, content, input.template);
+        const current = await prisma.userResumeBase.update({
+            where: { id: resumeBase.id },
+            data: { renderStatus: "CURRENT" },
+        });
+        return { ...current, pdfFilePath };
+    } catch (error) {
+        await prisma.userResumeBase.update({
+            where: { id: resumeBase.id },
+            data: { renderStatus: "FAILED" },
+        });
+        throw error;
+    }
 }
 
 export async function listUserResumeBases(userId: string) {
@@ -994,16 +1021,21 @@ export async function updateUserResumeBase(userId: string, resumeBaseId: string,
         where: { id: resumeBaseId, userId },
     });
     const target = input.target ?? existingResumeBase.target;
-    const userSelections = input.isDefault
-        ? await prisma.appUser.findUniqueOrThrow({
-            where: { id: userId },
-            select: {
-                dailyAutomationFullstackResumeBaseId: true,
-                dailyAutomationBackendResumeBaseId: true,
-                dailyAutomationFrontendResumeBaseId: true,
-            },
-        })
-        : null;
+    const userState = await prisma.appUser.findUniqueOrThrow({
+        where: { id: userId },
+        select: {
+            candidateRevision: true,
+            dailyAutomationFullstackResumeBaseId: true,
+            dailyAutomationBackendResumeBaseId: true,
+            dailyAutomationFrontendResumeBaseId: true,
+        },
+    });
+    const lifecycle = resolveResumeBaseUpdate({
+        existing: existingResumeBase,
+        patch: input,
+        currentCandidateRevision: userState.candidateRevision,
+    });
+    const userSelections = input.isDefault ? userState : null;
     const activation = input.isDefault && userSelections
         ? buildResumeBaseActivationUpdate(resumeBaseId, target, userSelections)
         : null;
@@ -1022,6 +1054,10 @@ export async function updateUserResumeBase(userId: string, resumeBaseId: string,
                 target: input.target,
                 targetTitle: input.targetTitle === undefined ? undefined : input.targetTitle?.trim() || null,
                 content: input.content,
+                mode: lifecycle.mode,
+                sourceRevision: lifecycle.sourceRevision,
+                definition: lifecycle.definition,
+                renderStatus: lifecycle.renderStatus,
                 isDefault: input.isDefault,
             },
         });
@@ -1031,15 +1067,32 @@ export async function updateUserResumeBase(userId: string, resumeBaseId: string,
         return updated;
     });
 
-    return Promise.resolve(resumeBase).then(async (savedResumeBase) => {
-        invalidateMasterSkillsCache(userId);
+    invalidateMasterSkillsCache(userId);
+    if (!lifecycle.shouldRender) {
         return {
-            ...savedResumeBase,
-            pdfFilePath: input.content || input.template
-                ? await createResumeBasePdf(userId, savedResumeBase.id, input.content ?? savedResumeBase.content, input.template)
-                : resumeBasePdfPath(userId, savedResumeBase.id),
+            ...resumeBase,
+            pdfFilePath: await resumeBasePdfPathIfExists(userId, resumeBase.id),
         };
-    });
+    }
+    try {
+        const pdfFilePath = await createResumeBasePdf(
+            userId,
+            resumeBase.id,
+            input.content ?? resumeBase.content,
+            lifecycle.definition.template,
+        );
+        const current = await prisma.userResumeBase.update({
+            where: { id: resumeBase.id },
+            data: { renderStatus: lifecycle.statusAfterRender },
+        });
+        return { ...current, pdfFilePath };
+    } catch (error) {
+        await prisma.userResumeBase.update({
+            where: { id: resumeBase.id },
+            data: { renderStatus: "FAILED" },
+        });
+        throw error;
+    }
 }
 
 export function buildResumeBaseActivationUpdate(

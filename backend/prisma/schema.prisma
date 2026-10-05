@@ -36,6 +36,19 @@ enum ResumeBaseTarget {
   CUSTOM
 }
 
+enum ResumeBaseMode {
+  LINKED
+  UPLOADED_SNAPSHOT
+  DETACHED
+}
+
+enum ResumeBaseStatus {
+  CURRENT
+  STALE
+  PROCESSING
+  FAILED
+}
+
 enum CandidateExperienceType {
   COMMERCIAL
   FREELANCE
@@ -317,12 +330,17 @@ model UserResumeBase {
   targetTitle String?
   content     String           @db.Text
   sourceFilePath String?
+  mode        ResumeBaseMode   @default(LINKED)
+  sourceRevision Int?
+  definition  Json             @default("{}")
+  renderStatus ResumeBaseStatus @default(CURRENT)
   isDefault   Boolean          @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([userId, target])
+  @@index([userId, mode, renderStatus])
 }
 
 model UserLinkedInAccount {
