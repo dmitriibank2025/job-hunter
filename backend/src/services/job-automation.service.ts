@@ -9,6 +9,7 @@ import { sendTelegramMessageToUser } from "./telegram.service";
 import { analyzeJob } from "./job-analyzer.service";
 import { selectResumeBaseForJob } from "./resume-base-selector.service";
 import type { ResumeBaseSelectionMap } from "./resume-base-selector.service";
+import type { JobSearchProviderName } from "../providers/types";
 import {
     filterJobsBySearchPreferences,
     normalizeSearchPreferences,
@@ -62,6 +63,7 @@ export type JobAutomationReport = {
     telegramSent: boolean;
     message: string;
     sourceMode: JobAutomationSourceMode;
+    providerNames?: JobSearchProviderName[];
     preferenceFilterStats?: SearchPreferenceFilterStats;
     userLimitStats?: {
         userId: string;
@@ -298,6 +300,7 @@ async function processBatch<T, R>(
 export async function runJobAutomationWorkflowWithSource(options: {
     searchLocation?: string;
     sourceMode?: JobAutomationSourceMode;
+    providerNames?: JobSearchProviderName[];
     preferences?: SearchPreferences;
     userId?: string;
     resumeBaseId?: string;
@@ -320,7 +323,11 @@ export async function runJobAutomationWorkflowWithSource(options: {
 
     try {
         await assertUserLimit(userId, "SEARCH_RUN");
-        await recordUsageEvent(userId, "SEARCH_RUN", 1, { sourceMode, searchLocation });
+        await recordUsageEvent(userId, "SEARCH_RUN", 1, {
+            sourceMode,
+            searchLocation,
+            providerNames: options.providerNames,
+        });
 
         const emailReport = sourceMode === "EMAIL"
             ? (updateAutomationProgress(userId, {
@@ -361,6 +368,7 @@ export async function runJobAutomationWorkflowWithSource(options: {
         const providerJobs = sourceMode === "PROVIDERS"
             ? await collectJobs({
                 searchLocation,
+                providerNames: options.providerNames,
                 preferences,
                 userId,
                 allowGlobalLinkedInFallback: options.allowGlobalLinkedInFallback,
@@ -627,6 +635,11 @@ export async function runJobAutomationWorkflowWithSource(options: {
             telegramSent,
             message,
             sourceMode,
+            providerNames: sourceMode === "PROVIDERS"
+                ? options.providerNames
+                : sourceMode === "CENTER_ISRAEL"
+                    ? ["CENTER_ISRAEL"]
+                    : [],
             preferenceFilterStats,
             userLimitStats: userId ? {
                 userId,

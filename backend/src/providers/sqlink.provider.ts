@@ -1,163 +1,91 @@
 import { JobProvider } from "./job-provider";
 import { ParsedJob } from "./types";
-import {
-    DEFAULT_SEARCH_KEYWORDS,
-    absoluteUrl,
-    cardDescription,
-    createProviderBrowser,
-    extractDescription,
-    filterRelevantJobs,
-    newProviderPage,
-    parsePostedAt,
-    shouldFetchProviderDetails,
-} from "./browser-provider-utils";
+import { createProviderBrowser, newProviderPage } from "./browser-provider-utils";
+import { extractSourceJobDetail } from "./source-detail-extractor";
+import { SourceAuditTracker } from "./source-audit";
 
-type SqlinkCard = {
-    title: string;
-    company?: string;
-    location?: string;
-    url?: string;
-    postedAt?: string;
-};
+const DEFAULT_CATEGORY_URLS = [
+    "https://www.sqlink.com/career/%D7%A4%D7%99%D7%AA%D7%95%D7%97-%D7%AA%D7%95%D7%9B%D7%A0%D7%94-webmobile/",
+    "https://www.sqlink.com/career/bidbabig-data/",
+];
+
+function categoryUrls(): string[] {
+    return (process.env.SQLINK_CATEGORY_URLS ?? DEFAULT_CATEGORY_URLS.join(";"))
+        .split(/[;\n]/).map((value) => value.trim()).filter(Boolean);
+}
+
+export function isSqlinkJobDetailUrl(url: string): boolean {
+    try {
+        const parsed = new URL(url);
+        if (!/sqlink\.com$/i.test(parsed.hostname.replace(/^www\./, ""))) return false;
+        if (/\.(?:pdf|docx?|xlsx?|zip)$/i.test(parsed.pathname) || /\/media\//i.test(parsed.pathname)) return false;
+        if (/\/career\/(?:[^/]+\/){0,1}[^/]+\/?$/i.test(parsed.pathname) && !/\d{4,}/.test(url)) return false;
+        return /\d{5,}|jobid|positionid|\/job\//i.test(url);
+    } catch {
+        return false;
+    }
+}
 
 export class SqlinkProvider implements JobProvider {
     source = "SQLINK";
+    auditReport?: SourceAuditTracker["report"];
 
     async search(): Promise<ParsedJob[]> {
+        const audit = new SourceAuditTracker(this.source);
         const browser = await createProviderBrowser();
-        const page = await newProviderPage(browser);
-
-        try {
-            const searchUrl = "https://www.sqlink.com/hightechjob/";
-
-            await page.goto(searchUrl, {
-                waitUntil: "domcontentloaded",
-                timeout: 60000,
-            });
-
-            await page.waitForTimeout(2500);
-
-            const cards = await page.$$eval(
-                "a[href*='/career/']",
-                (elements) => {
-                    const seen = new Set<string>();
-
-                    return elements
-                        .map((element) => {
-                            const link =
-                                element instanceof HTMLAnchorElement
-                                    ? element
-                                    : element.querySelector<HTMLAnchorElement>("a[href]");
-                            const container = element.closest("article,li,section,div");
-                            const text = container?.textContent?.replace(/\s+/g, " ").trim() ?? "";
-                            const title =
-                                container?.querySelector<HTMLElement>("h1,h2,h3,.title,.job-title,[class*='title']")?.textContent?.trim() ||
-                                link?.textContent?.trim() ||
-                                text.split("|")[0]?.trim() ||
-                                "";
-                            const company =
-                                container?.querySelector<HTMLElement>(".company,[class*='company']")?.textContent?.trim() ||
-                                "SQLINK";
-                            const location =
-                                container?.querySelector<HTMLElement>(".location,[class*='location'],[class*='area']")?.textContent?.trim() ||
-                                undefined;
-                            const postedAt =
-                                container?.querySelector("time")?.getAttribute("datetime") ||
-                                container?.querySelector("time")?.textContent?.trim() ||
-                                undefined;
-
-                            return {
-                                title,
-                                company,
-                                location,
-                                url: link?.href,
-                                postedAt,
-                            };
-                        })
-                        .filter((card) => {
-                            if (
-                                !card.title ||
-                                card.title.length < 15 ||
-                                !card.url ||
-                                card.url.includes("/blog/") ||
-                                seen.has(card.url)
-                            ) {
-                                return false;
-                            }
-
-                            seen.add(card.url);
-                            return true;
-                        })
-                        .slice(0, 10);
-                },
-            );
-
-            return await this.enrichCards(browser, cards, "https://www.sqlink.com");
-        } finally {
-            await browser.close();
-        }
-    }
-
-    private async enrichCards(browser: Awaited<ReturnType<typeof createProviderBrowser>>, cards: SqlinkCard[], baseUrl: string) {
+        const discoveryPage = await newProviderPage(browser);
+        const detailPage = await newProviderPage(browser);
+        const urls = new Set<string>();
         const jobs: ParsedJob[] = [];
 
-        for (const card of cards) {
-            const url = absoluteUrl(card.url, baseUrl);
-            if (!url) continue;
-
-            if (!shouldFetchProviderDetails()) {
-                jobs.push({
-                    title: card.title,
-                    company: card.company,
-                    location: card.location,
-                    url,
-                    postedAt: parsePostedAt(card.postedAt),
-                    source: "SQLINK",
-                    description: cardDescription(card),
-                });
-                continue;
+        try {
+            for (const categoryUrl of categoryUrls()) {
+                try {
+                    await discoveryPage.goto(categoryUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+                    await discoveryPage.waitForTimeout(800);
+                    const links = await discoveryPage.$$eval("a[href]", (nodes) =>
+                        [...new Set(nodes.map((node) => (node as HTMLAnchorElement).href))],
+                    );
+                    links.filter(isSqlinkJobDetailUrl).forEach((url) => urls.add(url));
+                } catch {
+                    audit.increment("parseErrors");
+                    audit.reject({ url: categoryUrl, classification: "category", reason: "CATEGORY_DISCOVERY_ERROR" });
+                }
             }
 
-            const detailPage = await newProviderPage(browser);
-
-            try {
-                await detailPage.goto(url, {
-                    waitUntil: "domcontentloaded",
-                    timeout: 15000,
-                });
-
-                const description =
-                    await extractDescription(detailPage, [
-                        ".job-description",
-                        ".jobDescription",
-                        "[class*='description']",
-                        "main",
-                    ]);
-
-                jobs.push({
-                    title: card.title,
-                    company: card.company,
-                    location: card.location,
+            audit.increment("discoveredUrls", urls.size);
+            if (urls.size === 0) audit.reject({ classification: "category", reason: "NO_DETAIL_URLS_ON_CATEGORY_PAGES" });
+            const limit = Math.max(1, Number(process.env.SQLINK_MAX_DETAIL_PAGES ?? 12) || 12);
+            for (const url of [...urls].slice(0, limit)) {
+                audit.increment("detailPagesFetched");
+                const result = await extractSourceJobDetail({
+                    page: detailPage,
                     url,
-                    postedAt: parsePostedAt(card.postedAt),
                     source: "SQLINK",
-                    description: description ?? card.title,
+                    selectors: {
+                        title: ["h1", ".job-title", "[class*='position-title']"],
+                        company: ["[class*='company']", "[class*='employer']"],
+                        location: ["[class*='location']", "[class*='area']"],
+                        description: ["[class*='job-description']", "[class*='description']", "main"],
+                    },
                 });
-            } catch {
-                jobs.push({
-                    title: card.title,
-                    company: card.company,
-                    location: card.location,
-                    url,
-                    postedAt: parsePostedAt(card.postedAt),
-                    source: "SQLINK",
-                    description: card.title,
-                });
-            } finally {
-                await detailPage.close();
+                if (!result.job) {
+                    if (result.error) audit.increment("parseErrors");
+                    audit.reject({ url, classification: result.classification.classification, reason: result.error ?? result.classification.reasons[0] });
+                    continue;
+                }
+                audit.increment("classifiedJobPages");
+                audit.increment("normalizedJobs");
+                audit.increment(result.method === "json_ld" ? "structuredDataHits" : "domExtractionHits");
+                jobs.push(result.job);
             }
+            return jobs;
+        } finally {
+            this.auditReport = audit.report;
+            audit.log();
+            await detailPage.close().catch(() => undefined);
+            await discoveryPage.close().catch(() => undefined);
+            await browser.close().catch(() => undefined);
         }
-
-        return filterRelevantJobs(jobs);
     }
 }

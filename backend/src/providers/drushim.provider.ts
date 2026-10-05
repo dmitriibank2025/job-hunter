@@ -1,172 +1,85 @@
 import { JobProvider } from "./job-provider";
 import { ParsedJob } from "./types";
-import {
-    DEFAULT_SEARCH_KEYWORDS,
-    DEFAULT_SEARCH_KEYWORD_QUERIES,
-    absoluteUrl,
-    cardDescription,
-    createProviderBrowser,
-    extractDescription,
-    filterRelevantJobs,
-    newProviderPage,
-    parsePostedAt,
-    shouldFetchProviderDetails,
-} from "./browser-provider-utils";
+import { DEFAULT_SEARCH_KEYWORD_QUERIES, createProviderBrowser, newProviderPage } from "./browser-provider-utils";
+import { extractSourceJobDetail } from "./source-detail-extractor";
+import { SourceAuditTracker } from "./source-audit";
 
-type DrushimCard = {
-    title: string;
-    company?: string;
-    location?: string;
-    url?: string;
-    postedAt?: string;
-};
+function maxDetailPages(): number {
+    const value = Number(process.env.DRUSHIM_MAX_DETAIL_PAGES ?? 12);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 12;
+}
+
+export function isDrushimJobDetailUrl(value: string): boolean {
+    try {
+        const url = new URL(value);
+        return /(?:^|\.)drushim\.co\.il$/i.test(url.hostname)
+            && /\/job\/\d+\/[a-z0-9]+\/?$/i.test(url.pathname);
+    } catch {
+        return false;
+    }
+}
 
 export class DrushimProvider implements JobProvider {
     source = "DRUSHIM";
+    auditReport?: SourceAuditTracker["report"];
 
     async search(): Promise<ParsedJob[]> {
+        const audit = new SourceAuditTracker(this.source);
         const browser = await createProviderBrowser();
-        const page = await newProviderPage(browser);
+        const searchPage = await newProviderPage(browser);
+        const detailPage = await newProviderPage(browser);
+        const discovered = new Set<string>();
+        const jobs: ParsedJob[] = [];
 
         try {
-            const cards: DrushimCard[] = [];
-            const seenCards = new Set<string>();
-
             for (const keywords of DEFAULT_SEARCH_KEYWORD_QUERIES) {
                 const searchUrl = `https://www.drushim.co.il/jobs/search/${encodeURIComponent(keywords)}/`;
-
-                await page.goto(searchUrl, {
-                    waitUntil: "domcontentloaded",
-                    timeout: 60000,
-                });
-
-                await page.waitForTimeout(2500);
-
-                const pageCards = await page.$$eval(
-                    "a[href*='/job/']",
-                    (elements) => {
-                        const seen = new Set<string>();
-
-                        return elements
-                            .map((element) => {
-                                const link =
-                                    element instanceof HTMLAnchorElement
-                                        ? element
-                                        : element.querySelector<HTMLAnchorElement>("a[href]");
-                                const container = element.closest("article,li,section,div");
-                                const text = container?.textContent?.replace(/\s+/g, " ").trim() ?? "";
-                                const title =
-                                    container?.querySelector<HTMLElement>("h1,h2,h3,.job-title,.title,[class*='title']")?.textContent?.trim() ||
-                                    link?.textContent?.trim() ||
-                                    text.split("|")[0]?.trim() ||
-                                    "";
-
-                                const company =
-                                    container?.querySelector<HTMLElement>(".company,.company-name,[class*='company']")?.textContent?.trim() ||
-                                    undefined;
-                                const location =
-                                    container?.querySelector<HTMLElement>(".location,[class*='location'],[class*='city']")?.textContent?.trim() ||
-                                    undefined;
-                                const postedAt =
-                                    container?.querySelector("time")?.getAttribute("datetime") ||
-                                    container?.querySelector("time")?.textContent?.trim() ||
-                                    undefined;
-
-                                return {
-                                    title,
-                                    company,
-                                    location,
-                                    url: link?.href,
-                                    postedAt,
-                                };
-                            })
-                            .filter((card) => {
-                                if (
-                                    !card.url ||
-                                    !/\/job\/\d+\/[^/]+\/?$/i.test(card.url) ||
-                                    seen.has(card.url)
-                                ) {
-                                    return false;
-                                }
-
-                                seen.add(card.url);
-                                return true;
-                            })
-                            .slice(0, 10);
-                    },
-                );
-
-                for (const card of pageCards) {
-                    if (!card.url || seenCards.has(card.url)) continue;
-                    seenCards.add(card.url);
-                    cards.push(card);
+                try {
+                    await searchPage.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+                    await searchPage.waitForTimeout(1_000);
+                    const urls = await searchPage.$$eval("a[href*='/job/']", (links) =>
+                        [...new Set(links.map((link) => (link as HTMLAnchorElement).href))],
+                    );
+                    urls.filter(isDrushimJobDetailUrl).forEach((url) => discovered.add(url));
+                } catch (error) {
+                    audit.increment("parseErrors");
+                    audit.reject({ url: searchUrl, reason: `SEARCH_FETCH_ERROR:${error instanceof Error ? error.message.split("\n")[0] : String(error)}` });
                 }
             }
 
-            return await this.enrichCards(browser, cards, "https://www.drushim.co.il");
+            audit.increment("discoveredUrls", discovered.size);
+            for (const url of [...discovered].slice(0, maxDetailPages())) {
+                audit.increment("detailPagesFetched");
+                const result = await extractSourceJobDetail({
+                    page: detailPage,
+                    url,
+                    source: "DRUSHIM",
+                    selectors: {
+                        title: ["h1", ".job-title", "[class*='jobTitle']"],
+                        company: ["[class*='company-name']", "[class*='companyName']", "[class*='employer']"],
+                        location: ["[class*='job-location']", "[class*='location']", "[class*='area']"],
+                        description: [".job-description", "#jobDescription", "[class*='jobDescription']", "main"],
+                        postedAt: ["time", "[class*='publish-date']", "[class*='date']"],
+                    },
+                });
+                if (!result.job) {
+                    if (result.error) audit.increment("parseErrors");
+                    if (result.classification.classification === "category") audit.increment("categoryPagesRejected");
+                    audit.reject({ url, classification: result.classification.classification, reason: result.error ?? result.classification.reasons[0] });
+                    continue;
+                }
+                audit.increment("classifiedJobPages");
+                audit.increment("normalizedJobs");
+                audit.increment(result.method === "json_ld" ? "structuredDataHits" : "domExtractionHits");
+                jobs.push(result.job);
+            }
+            return jobs;
         } finally {
-            await browser.close();
+            this.auditReport = audit.report;
+            audit.log();
+            await detailPage.close().catch(() => undefined);
+            await searchPage.close().catch(() => undefined);
+            await browser.close().catch(() => undefined);
         }
-    }
-
-    private async enrichCards(browser: Awaited<ReturnType<typeof createProviderBrowser>>, cards: DrushimCard[], baseUrl: string) {
-        const jobs: ParsedJob[] = [];
-
-        for (const card of cards) {
-            const url = absoluteUrl(card.url, baseUrl);
-            if (!url) continue;
-
-            if (!shouldFetchProviderDetails()) {
-                jobs.push({
-                    title: card.title,
-                    company: card.company,
-                    location: card.location,
-                    url,
-                    postedAt: parsePostedAt(card.postedAt),
-                    source: "DRUSHIM",
-                    description: cardDescription(card),
-                });
-                continue;
-            }
-
-            const detailPage = await newProviderPage(browser);
-
-            try {
-                await detailPage.goto(url, {
-                    waitUntil: "domcontentloaded",
-                    timeout: 15000,
-                });
-
-                const description =
-                    await extractDescription(detailPage, [
-                        ".job-description",
-                        ".jobDescription",
-                        "[class*='description']",
-                        "main",
-                    ]);
-                const title =
-                    card.title ||
-                    (await detailPage
-                        .locator("h1,h2,[class*='title']")
-                        .first()
-                        .textContent({ timeout: 3000 })
-                        .catch(() => null))?.trim() ||
-                    (await detailPage.title()).replace(/\s*\|.*$/, "").trim();
-
-                jobs.push({
-                    title,
-                    company: card.company,
-                    location: card.location,
-                    url,
-                    postedAt: parsePostedAt(card.postedAt),
-                    source: "DRUSHIM",
-                    description: description ?? card.title,
-                });
-            } finally {
-                await detailPage.close();
-            }
-        }
-
-        return filterRelevantJobs(jobs);
     }
 }

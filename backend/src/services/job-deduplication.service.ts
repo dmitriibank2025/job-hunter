@@ -4,7 +4,8 @@ import { ParsedJob } from "../providers/types";
 
 type JobInput = Pick<
     ParsedJob,
-    "title" | "externalJobId" | "company" | "location" | "url" | "postedAt" | "description"
+    "title" | "externalJobId" | "company" | "location" | "url" | "postedAt" | "description" |
+    "applyUrl" | "employmentType" | "ingestion"
 > & {
     source?: string;
 };
@@ -22,7 +23,10 @@ export function normalizeJobUrl(url?: string | null): string | null {
     try {
         const parsed = new URL(url);
         parsed.hash = "";
-        parsed.search = "";
+        const identityParameter = ["JobID", "jobId", "key", "gh_jid", "currentJobId"]
+            .map((key) => [key, parsed.searchParams.get(key)] as const)
+            .find(([, value]) => Boolean(value));
+        parsed.search = identityParameter ? `?${identityParameter[0]}=${encodeURIComponent(identityParameter[1]!)}` : "";
         parsed.hostname = parsed.hostname.replace(/^www\./, "").toLowerCase();
         parsed.pathname = parsed.pathname.replace(/\/+$/, "");
 
@@ -121,8 +125,13 @@ export function buildJobCreateData(job: JobInput) {
         normalizedUrl: normalizeJobUrl(job.url),
         fingerprint: buildJobFingerprint(job),
         postedAt: job.postedAt,
+        applyUrl: job.applyUrl,
+        employmentType: job.employmentType,
         source: job.source,
         description: job.description,
+        ingestionQualityScore: job.ingestion?.qualityScore,
+        ingestionQualityState: job.ingestion?.qualityState,
+        ingestionMetadata: job.ingestion as Prisma.InputJsonValue | undefined,
     };
 }
 
@@ -202,25 +211,53 @@ export async function createJobIfNew(job: JobInput): Promise<{
         const existingResumeCount = await prisma.resumeVersion.count({
             where: { jobId: duplicate.id },
         });
+        const longerDescription = incomingDescription.length > existingDescription.length;
+        const incomingQualityScore = job.ingestion?.qualityScore;
+        const improvesQuality = incomingQualityScore !== undefined &&
+            (duplicate.ingestionQualityScore === null || incomingQualityScore > duplicate.ingestionQualityScore);
+        const updates: Prisma.JobUpdateInput = {};
 
-        if (incomingDescription.length > existingDescription.length) {
+        if (longerDescription) updates.description = job.description;
+        if (!duplicate.company?.trim() && job.company?.trim()) updates.company = job.company;
+        if (!duplicate.location?.trim() && job.location?.trim()) updates.location = job.location;
+        if (!duplicate.postedAt && job.postedAt) updates.postedAt = job.postedAt;
+        if (!duplicate.applyUrl && job.applyUrl) updates.applyUrl = job.applyUrl;
+        if (!duplicate.employmentType && job.employmentType) updates.employmentType = job.employmentType;
+        if (!duplicate.externalJobId) {
+            const externalJobId = resolveExternalJobId(job);
+            if (externalJobId) updates.externalJobId = externalJobId;
+        }
+        if (!duplicate.normalizedUrl) {
+            const normalizedUrl = normalizeJobUrl(duplicate.url ?? job.url);
+            if (normalizedUrl) updates.normalizedUrl = normalizedUrl;
+        }
+        if (!duplicate.fingerprint) {
+            const fingerprint = buildJobFingerprint({
+                title: duplicate.title,
+                company: duplicate.company ?? job.company,
+                postedAt: duplicate.postedAt ?? job.postedAt,
+            });
+            if (fingerprint) updates.fingerprint = fingerprint;
+        }
+        if (improvesQuality) {
+            updates.ingestionQualityScore = incomingQualityScore;
+            updates.ingestionQualityState = job.ingestion?.qualityState;
+            updates.ingestionMetadata = job.ingestion as Prisma.InputJsonValue;
+        } else if (!duplicate.ingestionMetadata && job.ingestion) {
+            updates.ingestionMetadata = job.ingestion as Prisma.InputJsonValue;
+            if (!duplicate.ingestionQualityState) updates.ingestionQualityState = job.ingestion.qualityState;
+        }
+
+        if (Object.keys(updates).length) {
             const updated = await prisma.job.update({
                 where: { id: duplicate.id },
-                data: buildJobCreateData({
-                    ...job,
-                    title: duplicate.title,
-                    company: duplicate.company ?? job.company,
-                    location: job.location ?? duplicate.location ?? undefined,
-                    url: duplicate.url ?? job.url,
-                    postedAt: duplicate.postedAt ?? job.postedAt,
-                    source: duplicate.source ?? job.source,
-                }),
+                data: updates,
             });
 
             return {
                 job: updated,
                 isNew: false,
-                shouldProcess: existingResumeCount === 0,
+                shouldProcess: existingResumeCount === 0 && (longerDescription || updated.description.trim().length >= 500),
             };
         }
 

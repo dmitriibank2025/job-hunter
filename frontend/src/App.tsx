@@ -302,9 +302,9 @@ export function App() {
     setEducations((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
   }
 
-  function applyUser(nextUser: WorkspaceUser) {
+  function applyUser(nextUser: WorkspaceUser, preferredResumeBaseId?: string) {
     const defaultResume = nextUser.resumeBases?.find((item) => item.isDefault) ?? nextUser.resumeBases?.[0];
-    const selectedForUser = nextUser.resumeBases?.some((item) => item.id === settings.selectedResumeBaseId)
+    const selectedForUser = preferredResumeBaseId && nextUser.resumeBases?.some(item => item.id === preferredResumeBaseId) ? preferredResumeBaseId : nextUser.resumeBases?.some((item) => item.id === settings.selectedResumeBaseId)
         ? settings.selectedResumeBaseId
         : defaultResume?.id || "";
     setUser(nextUser);
@@ -583,9 +583,8 @@ export function App() {
       }),
     });
     setResumePreview(data.resumeBase.content);
-    persist({ ...settings, selectedResumeBaseId: data.resumeBase.id });
     const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
-    applyUser(loaded.user);
+    applyUser(loaded.user, data.resumeBase.id);
     setStatus("Resume file uploaded and parsed.");
   }
 
@@ -629,7 +628,7 @@ export function App() {
     applyUser(loaded.user);
     setEditingResumeBaseId(data.resumeBase.id);
     persist({ ...settings, selectedResumeBaseId: data.resumeBase.id });
-    setStatus("Base resume saved.");
+    setStatus(`Base resume saved and activated for ${data.resumeBase.target} generation.`);
   }
 
   async function deleteBaseResume() {
@@ -651,7 +650,12 @@ export function App() {
     if (!selectedResumeBaseId) throw new Error("Select or create a base resume before searching.");
     const label = sourceMode === "PROVIDERS" ? "Provider vacancy search" : `${sourceMode} vacancy search`;
     startOperation(label);
-    addStep(sourceMode === "EMAIL" ? "Scanning Gmail application history..." : "Connecting to job providers...");
+    const selectedProviders = splitTerms(settings.searchProviders);
+    addStep(sourceMode === "EMAIL"
+      ? "Scanning Gmail application history..."
+      : sourceMode === "PROVIDERS"
+        ? `Connecting to ${selectedProviders.length} selected job sources...`
+        : "Connecting to company career pages...");
     try {
       const data = await api<any>("/jobs/automation/run", {
         method: "POST",
@@ -662,6 +666,7 @@ export function App() {
           resumeBaseIds: selectedResumeBaseIds,
           searchLocation: settings.searchLocation,
           sourceMode,
+          providerNames: sourceMode === "PROVIDERS" ? selectedProviders : undefined,
           preferences: {
             targetRoles: splitTerms(settings.targetRoles),
             targetLocations: splitTerms(settings.targetLocations),

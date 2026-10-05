@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { LANGUAGE_OPTIONS } from "../services/user-workspace.service";
+import { JOB_SEARCH_PROVIDER_NAMES } from "../providers/types";
 
 export const createJobSchema = z.object({
     title: z.string().min(2),
@@ -51,6 +52,7 @@ export const automationRunSchema = z.object({
     }).optional(),
     searchLocation: z.string().min(2).optional(),
     sourceMode: z.enum(["EMAIL", "PROVIDERS", "CENTER_ISRAEL"]).optional(),
+    providerNames: z.array(z.enum(JOB_SEARCH_PROVIDER_NAMES)).min(1).optional(),
     preferences: z.object({
         targetRoles: z.array(z.string()).optional(),
         targetLocations: z.array(z.string()).optional(),

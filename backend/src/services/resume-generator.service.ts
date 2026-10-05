@@ -23,6 +23,10 @@ import {
 } from "./ats-resume-validator.service";
 import { logger } from "../Logger/logger";
 import { prisma } from "../infrastructure/prisma";
+import { z } from "zod";
+import { runEvidencePipeline, scoreResumePresentation } from "./resume-pipeline.service";
+import { retrieveRelevantChunks } from "./embedding.service";
+import { buildEvidenceCorpus } from "./resume-evidence.service";
 
 const MODEL = process.env.RESUME_GENERATION_MODEL ?? "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS ?? 60_000);
@@ -1119,15 +1123,19 @@ async function callOpenAIForText(
     scope: string,
     jobId: string,
     userId: string,
+    systemPrompt?: string,
+    jsonMode = false,
+    jsonSchema?: Record<string, unknown>,
 ): Promise<string> {
     const startedAt = Date.now();
     const response = await getOpenAIClient().chat.completions.create({
         model: MODEL,
         temperature: 0.25,
+        ...(jsonSchema ? { response_format: { type: "json_schema" as const, json_schema: { name: "resume_stage", strict: true, schema: jsonSchema } } } : jsonMode ? { response_format: { type: "json_object" as const } } : {}),
         messages: [
             {
                 role: "system",
-                content:
+                content: systemPrompt ??
                     "You are a precise technical career assistant. The provided base resume is the only source of truth. Never invent experience, never restore removed claims, never replace concrete technical details with generic wording, and never use cliche resume language.",
             },
             { role: "user", content: prompt },
@@ -1166,7 +1174,7 @@ async function callOpenAIForText(
     const rawContent = response.choices[0]?.message?.content;
     if (!rawContent) throw new Error(`Empty ${scope} response from OpenAI`);
 
-    return normalizeSectionText(cleanAiText(rawContent));
+    return jsonMode ? rawContent : normalizeSectionText(cleanAiText(rawContent));
 }
 
 function isHeaderContactLine(line: string): boolean {
@@ -1936,6 +1944,28 @@ async function finalizeResumeContent(
     };
 }
 
+export async function generateVerifiedResume(job: Job, userId: string, baseResume: string, fullName: string, maxRepairs = ATS_RESUME_REPAIR_ATTEMPTS) {
+    const result = await runEvidencePipeline({ vacancy: { title: job.title, description: job.description }, baseResume, fullName, maxRepairs }, {
+        complete: async (system, input, schema, stage) => JSON.parse(await callOpenAIForText(
+            JSON.stringify({ input }),
+            `resume_pipeline_${stage}`, job.id, userId, system, true, z.toJSONSchema(schema, { reused: "ref" }),
+        )),
+        searchExperience: (query, k) => retrieveRelevantChunks(userId, query, k),
+    });
+    const presentation = scoreResumePresentation(result.content);
+    if (!result.validation.valid) throw new Error("Final deterministic validation must PASS before rendering");
+    const missing = new Set(result.validation.missingRequirements);
+    return {
+        content: result.content,
+        atsScore: result.validation.score.total,
+        atsIssues: presentation.issues,
+        atsMatchedKeywords: result.analysis.requirements.filter(r => !missing.has(r.id)).map(r => r.term),
+        atsMissingKeywords: result.analysis.requirements.filter(r => missing.has(r.id)).map(r => r.term),
+        atsValidatedAt: new Date(),
+        evidenceTrace: { version: 1, ...result, presentation },
+    };
+}
+
 export async function generateResumeForJob(
     jobId: string,
     options: GenerationOptions = {},
@@ -1970,16 +2000,8 @@ export async function generateResumeForJob(
     const profile = await getWorkspaceCandidateProfile(options.userId, selectedResumeBaseId);
     if (!profile) throw new Error("Candidate profile not found for this user");
 
-    const tailoringAnalysis = await loadLatestTailoringAnalysis(options.userId, job.id);
-
-    let content = await callOpenAIForText(
-        buildResumePrompt(job, profile.resume, tailoringAnalysis),
-        "resume_generation",
-        jobId,
-        options.userId,
-    );
-    const finalized = await finalizeResumeContent(job, content, options.userId, "resume_generation", profile.resume);
-    content = finalized.content;
+    const finalized = await generateVerifiedResume(job, options.userId, profile.resume, profile.fullName);
+    const content = finalized.content;
 
     const folderName = slugify(`${job.company ?? "unknown"}-${job.title}`);
     const resumeFolder = `resumes/${options.userId}/${folderName}`;
@@ -1989,16 +2011,14 @@ export async function generateResumeForJob(
     );
 
     await saveTextFile(resumeFolder, `${resumeBaseName}.md`, content);
+    await saveTextFile(resumeFolder, `${resumeBaseName}.evidence.json`, JSON.stringify(finalized.evidenceTrace, null, 2));
 
     const docxPath = path.join(getStorageRoot(), resumeFolder, `${resumeBaseName}.docx`);
     const pdfPath = path.join(getStorageRoot(), resumeFolder, `${resumeBaseName}.pdf`);
 
-    await createResumeDocxPreservingTemplate({
-        content,
-        baseContent: profile.resume,
-        sourceFilePath: profile.resumeSourceFilePath,
-        outputPath: docxPath,
-    });
+    // Positional template replacement can retain unmatched source paragraphs or
+    // truncate new sections. Render the exact validated content with the existing renderer.
+    await createStyledResumeDocx(content, docxPath);
 
     const pdfFilePath = await createResumePdfFromDocx({
         content,
@@ -2083,15 +2103,8 @@ export async function regenerateResumeVersion(
     const profile = await getWorkspaceCandidateProfile(existing.userId, selectedBaseId);
     if (!profile) throw new Error("Candidate profile not found for this user");
 
-    const tailoringAnalysis = await loadLatestTailoringAnalysis(existing.userId, existing.jobId);
-    let content = await callOpenAIForText(
-        buildResumePrompt(existing.job, profile.resume, tailoringAnalysis),
-        "resume_repair",
-        existing.jobId,
-        existing.userId,
-    );
-    const finalized = await finalizeResumeContent(existing.job, content, existing.userId, "resume_repair", profile.resume);
-    content = finalized.content;
+    const finalized = await generateVerifiedResume(existing.job, existing.userId, profile.resume, profile.fullName);
+    const content = finalized.content;
 
     const folderName = slugify(`${existing.job.company ?? "unknown"}-${existing.job.title}`);
     const resumeFolder = `resumes/${existing.userId}/${folderName}`;
@@ -2120,12 +2133,8 @@ export async function regenerateResumeVersion(
 
     await ensureDir(path.dirname(docxPath));
     await fs.writeFile(mdPath, content, "utf8");
-    await createResumeDocxPreservingTemplate({
-        content,
-        baseContent: profile.resume,
-        sourceFilePath: profile.resumeSourceFilePath,
-        outputPath: docxPath,
-    });
+    await fs.writeFile(docxPath.replace(/\.docx$/i, ".evidence.json"), JSON.stringify(finalized.evidenceTrace, null, 2), "utf8");
+    await createStyledResumeDocx(content, docxPath);
 
     const pdfFilePath = await createResumePdfFromDocx({
         content,
@@ -2173,8 +2182,13 @@ export async function generateCoverLetterForJob(
     const profile = await getWorkspaceCandidateProfile(options.userId, selectedResumeBaseId);
     if (!profile) throw new Error("Candidate profile not found for this user");
 
+    const coverEvidence = buildEvidenceCorpus(profile.resume, profile.fullName);
+    const verifiedCoverSource = [
+        ...coverEvidence.contactLines,
+        ...coverEvidence.evidence.map(e => `[${e.context}/${e.kind}${e.entityId ? `; ${e.source}` : ""}] ${e.text}`),
+    ].join("\n");
     const rawContent = await callOpenAIForText(
-        buildCoverLetterPrompt(job, profile.resume, profile.fullName),
+        buildCoverLetterPrompt(job, verifiedCoverSource, profile.fullName),
         "cover_letter_generation",
         jobId,
         options.userId,

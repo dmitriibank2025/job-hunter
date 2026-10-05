@@ -287,8 +287,13 @@ model Job {
   normalizedUrl String?   @unique
   fingerprint   String?   @unique
   postedAt      DateTime?
+  applyUrl      String?
+  employmentType String?
   description   String
   source        String?
+  ingestionQualityScore Int?
+  ingestionQualityState String?
+  ingestionMetadata Json?
   status        JobStatus @default(NEW)
 
   resumeVersions   ResumeVersion[]
@@ -511,6 +516,25 @@ model CompanyPriorityTarget {
   @@index([active, priority])
   @@index([nextCheckAt])
   @@index([lastFoundAt])
+}
+
+model AtsSourceConfiguration {
+  id               String   @id @default(uuid())
+  companyName      String
+  normalizedCompany String
+  careerUrl        String   @unique
+  atsType          String
+  accountSlug      String?
+  confidence       Int      @default(0)
+  active           Boolean  @default(true)
+  lastDiscoveredAt DateTime @default(now())
+  lastVerifiedAt   DateTime?
+  metadata         Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([atsType, active])
+  @@index([normalizedCompany])
 }
 
 // Per-user blacklist of companies whose vacancies are never collected, analyzed,

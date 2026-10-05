@@ -51,9 +51,13 @@ export async function replaceUserChunks(
     const unique = chunks.filter((c) => c.text.trim().length > 0);
     const vectors = await embedMany(unique.map((c) => c.text));
 
-    await prisma.experienceChunk.deleteMany({ where: { userId } });
-    for (let i = 0; i < unique.length; i += 1) {
-        await prisma.$executeRawUnsafe(
+    if (vectors.length !== unique.length || vectors.some(v => v.length !== EMBEDDING_DIMS || v.some(n => !Number.isFinite(n)))) {
+        throw new Error("Invalid embedding response; previous corpus retained");
+    }
+    await prisma.$transaction(async tx => {
+      await tx.experienceChunk.deleteMany({ where: { userId } });
+      for (let i = 0; i < unique.length; i += 1) {
+        await tx.$executeRawUnsafe(
             `INSERT INTO "ExperienceChunk" ("id","userId","source","text","embedding")
              VALUES ($1,$2,$3,$4,$5::vector)`,
             randomUUID(),
@@ -62,11 +66,12 @@ export async function replaceUserChunks(
             unique[i].text,
             toVectorLiteral(vectors[i]),
         );
-    }
+      }
+    }, { timeout: 30000 });
     return unique.length;
 }
 
-export type RetrievedChunk = { source: string; text: string; distance: number };
+export type RetrievedChunk = { id: string; source: string; text: string; distance: number };
 
 /** Retrieve the top-k experience chunks most relevant to `query` (cosine distance). */
 export async function retrieveRelevantChunks(
@@ -74,9 +79,11 @@ export async function retrieveRelevantChunks(
     query: string,
     k = 6,
 ): Promise<RetrievedChunk[]> {
+    if (!userId.trim() || !query.trim()) throw new Error("User and search query are required");
+    if (!Number.isInteger(k) || k < 1 || k > 10) throw new Error("Retrieval k must be an integer from 1 to 10");
     const q = await embed(query);
     return prisma.$queryRawUnsafe<RetrievedChunk[]>(
-        `SELECT "source", "text", ("embedding" <=> $1::vector) AS distance
+        `SELECT "id", "source", "text", ("embedding" <=> $1::vector) AS distance
          FROM "ExperienceChunk"
          WHERE "userId" = $2 AND "embedding" IS NOT NULL
          ORDER BY distance ASC

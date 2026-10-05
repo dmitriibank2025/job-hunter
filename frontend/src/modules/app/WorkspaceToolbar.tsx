@@ -21,9 +21,10 @@ export function WorkspaceToolbar({
   return (
     <section className="workspace-toolbar">
       <div>
-        <p className="eyebrow">Active base resume</p>
+        <p className="eyebrow">Fallback base resume</p>
         <strong>{selectedResumeBase?.name || "No base resume selected"}</strong>
         <span>{selectedResumeBase ? `${selectedResumeBase.target}${selectedResumeBase.targetTitle ? ` | ${selectedResumeBase.targetTitle}` : ""}` : "Create or upload a base resume before searching."}</span>
+        <small>Role-specific bases take priority. Backend: {user.resumeBases?.find(r => r.id === settings.selectedBackendResumeBaseId)?.name || "automatic"}. Frontend: {user.resumeBases?.find(r => r.id === settings.selectedFrontendResumeBaseId)?.name || "automatic"}.</small>
       </div>
       <label className="field compact-field">
         <span>Base Resume</span>

@@ -82,6 +82,11 @@ const RELEVANT_JOB_PATTERNS = [
     /software engineer/i,
     /software developer/i,
     /web developer/i,
+    /\b(?:ai|llm|machine learning) engineer\b/i,
+    /\bapplied ai\b/i,
+    /מפתח(?:ת)?\s*(?:תוכנה|בקאנד|פרונטאנד|פול[\s-]*סטאק)/i,
+    /מהנדס(?:ת)?\s*תוכנה/i,
+    /תוכניתנ(?:ית|ן)/i,
 ];
 
 const NON_JOB_URL_PATTERNS = [
@@ -103,6 +108,9 @@ const NON_JOB_URL_PATTERNS = [
 
 const NON_JOB_TITLE_PATTERNS = [
     /^jobs?$/i,
+    /^jobs?\s+by\s+(?:title|location|company|category|role)$/i,
+    /^(?:browse|view|search)\s+(?:all\s+)?jobs?$/i,
+    /^job\s+listings?$/i,
     /^היום$/,
     /דיווח על תוכן/i,
     /כתבה/i,
@@ -113,6 +121,18 @@ const NON_JOB_TITLE_PATTERNS = [
     /עריכה\/ניהול אתר/i,
     /הצטרפו לאחת המשרות/i,
 ];
+
+export function defaultProviderBrowserTimeoutMs(): number {
+    const configured = Number(process.env.PROVIDER_BROWSER_TIMEOUT_MS ?? 120000);
+    const providerTimeout = Number(process.env.PROVIDER_TIMEOUT_MS ?? 150000);
+    const safeProviderTimeout = Number.isFinite(providerTimeout) && providerTimeout > 0
+        ? providerTimeout + 60_000
+        : 210_000;
+
+    return Number.isFinite(configured) && configured > 0
+        ? Math.max(configured, safeProviderTimeout)
+        : safeProviderTimeout;
+}
 
 export function cleanJobTitle(title?: string | null): string {
     return (title ?? "")
@@ -198,8 +218,7 @@ export async function createProviderBrowser(options: {
         headless: process.env.PROVIDER_HEADLESS !== "false",
     }).catch((err) => { releaseBrowserSlot(); throw err; });
 
-    const envTimeoutMs = Number(process.env.PROVIDER_BROWSER_TIMEOUT_MS ?? 120000);
-    const timeoutMs = options.timeoutMs ?? envTimeoutMs;
+    const timeoutMs = options.timeoutMs ?? defaultProviderBrowserTimeoutMs();
 
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
         const timer = setTimeout(() => {
@@ -257,6 +276,16 @@ export function parsePostedAt(value?: string | null): Date | undefined {
     if (!value) return undefined;
 
     const trimmed = value.trim();
+    const dayFirst = /^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/.exec(trimmed);
+    if (dayFirst) {
+        const [, day, month, year] = dayFirst;
+        const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+        if (
+            date.getUTCFullYear() === Number(year)
+            && date.getUTCMonth() === Number(month) - 1
+            && date.getUTCDate() === Number(day)
+        ) return date;
+    }
     const direct = new Date(trimmed);
 
     if (!Number.isNaN(direct.getTime())) return direct;

@@ -1,8 +1,15 @@
 import { Job } from "@prisma/client";
+import { validateEvidenceResume, type EvidenceResume, type JobAnalysis, type EvidenceMap, type EvidenceCorpus, type ResumeValidationResult } from "./resume-evidence.service";
+
+export type ResumeEvidenceValidationContext = { resume: EvidenceResume; analysis: JobAnalysis; evidenceMap: EvidenceMap; corpus: EvidenceCorpus };
 
 type Role = "frontend" | "backend" | "fullstack" | "platform" | "data" | "security" | "qa" | "general";
+type AtsJob = Pick<Job, "title" | "description">;
 
 export type AtsResumeValidation = {
+    /** null means legacy Markdown-only scoring did not verify factual validity. */
+    valid: boolean | null;
+    evidenceValidation?: ResumeValidationResult;
     /** Unified job-fit score (0-100): resume quality minus weighted requirement gaps. */
     score: number;
     /** Resume-consistency score only (structural issues). Drives the generation repair gate. */
@@ -85,7 +92,7 @@ function hasPhrase(text: string, phrase: string) {
     return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`, "i").test(text);
 }
 
-function inferRole(job: Job): Role {
+function inferRole(job: AtsJob): Role {
     const title = normalize(job.title);
     const description = normalize(job.description);
 
@@ -129,7 +136,7 @@ function normalizeRoleLabel(value: string) {
         .trim();
 }
 
-function importantJobKeywords(job: Job) {
+function importantJobKeywords(job: AtsJob) {
     const text = `${job.title}\n${job.description}`;
     return KEYWORDS.filter((keyword) => hasPhrase(text, keyword));
 }
@@ -152,7 +159,7 @@ const CORE_CRITICAL = new Set(
     ].map((s) => s.toLowerCase()),
 );
 
-function classifyJobKeywords(job: Job): { mustHave: string[]; niceToHave: string[] } {
+function classifyJobKeywords(job: AtsJob): { mustHave: string[]; niceToHave: string[] } {
     const all = importantJobKeywords(job);
     const title = job.title ?? "";
     const desc = job.description ?? "";
@@ -228,7 +235,7 @@ function extractSupportedBulletTextFromExperienceBlock(block: string) {
     return result.join(" ");
 }
 
-export function validateResumeAgainstJob(job: Job, content: string): AtsResumeValidation {
+export function validateResumeAgainstJob(job: AtsJob, content: string, evidenceContext?: ResumeEvidenceValidationContext): AtsResumeValidation {
     const role = inferRole(job);
     const issues: string[] = [];
     const normalizedResume = normalize(content);
@@ -333,8 +340,11 @@ export function validateResumeAgainstJob(job: Job, content: string): AtsResumeVa
 
     const score = Math.max(0, Math.min(100, qualityScore - mustHavePenalty - nicePenalty));
 
+    const evidenceValidation = evidenceContext ? validateEvidenceResume(evidenceContext.resume, evidenceContext.analysis, evidenceContext.evidenceMap, evidenceContext.corpus) : undefined;
     return {
-        score,
+        valid: evidenceValidation?.valid ?? null,
+        ...(evidenceValidation ? { evidenceValidation } : {}),
+        score: evidenceValidation?.score.total ?? score,
         qualityScore,
         coverage,
         role,

@@ -50,6 +50,18 @@ async function getUserBlacklistNames(userId: string): Promise<string[]> {
     return rows.map((row) => row.name);
 }
 
+export function resolveExcludeRemote(
+    preferences: SearchPreferences,
+    persistedExcludeRemote: boolean | null | undefined,
+): boolean {
+    if (preferences.excludeRemote === true) return true;
+
+    const explicitlyAllowsRemote = (preferences.targetLocations ?? [])
+        .some((location) => /\bremote\b/i.test(location));
+
+    return !explicitlyAllowsRemote && Boolean(persistedExcludeRemote);
+}
+
 /**
  * Merge a user's persisted search filters (company blacklist + exclude-remote
  * toggle) into whatever preferences the caller supplied. Applied for BOTH the
@@ -74,7 +86,7 @@ export async function applyUserSearchFiltersToPreferences(
     return {
         ...base,
         excludedCompanies: mergedCompanies,
-        excludeRemote: Boolean(base.excludeRemote) || Boolean(user?.searchExcludeRemote),
+        excludeRemote: resolveExcludeRemote(base, user?.searchExcludeRemote),
     };
 }
 

@@ -896,35 +896,75 @@ export async function updateUserResumeBase(userId: string, resumeBaseId: string,
     isDefault?: boolean;
     template?: BasicResumePdfTemplate;
 }) {
-    await prisma.userResumeBase.findFirstOrThrow({
+    const existingResumeBase = await prisma.userResumeBase.findFirstOrThrow({
         where: { id: resumeBaseId, userId },
     });
+    const target = input.target ?? existingResumeBase.target;
+    const userSelections = input.isDefault
+        ? await prisma.appUser.findUniqueOrThrow({
+            where: { id: userId },
+            select: {
+                dailyAutomationFullstackResumeBaseId: true,
+                dailyAutomationBackendResumeBaseId: true,
+                dailyAutomationFrontendResumeBaseId: true,
+            },
+        })
+        : null;
+    const activation = input.isDefault && userSelections
+        ? buildResumeBaseActivationUpdate(resumeBaseId, target, userSelections)
+        : null;
 
-    if (input.isDefault) {
-        await prisma.userResumeBase.updateMany({
-            where: { userId, id: { not: resumeBaseId } },
-            data: { isDefault: false },
+    const resumeBase = await prisma.$transaction(async tx => {
+        if (input.isDefault) {
+            await tx.userResumeBase.updateMany({
+                where: { userId, id: { not: resumeBaseId } },
+                data: { isDefault: false },
+            });
+        }
+        const updated = await tx.userResumeBase.update({
+            where: { id: resumeBaseId },
+            data: {
+                name: input.name?.trim(),
+                target: input.target,
+                targetTitle: input.targetTitle === undefined ? undefined : input.targetTitle?.trim() || null,
+                content: input.content,
+                isDefault: input.isDefault,
+            },
         });
-    }
+        if (activation) {
+            await tx.appUser.update({ where: { id: userId }, data: activation });
+        }
+        return updated;
+    });
 
-    return prisma.userResumeBase.update({
-        where: { id: resumeBaseId },
-        data: {
-            name: input.name?.trim(),
-            target: input.target,
-            targetTitle: input.targetTitle === undefined ? undefined : input.targetTitle?.trim() || null,
-            content: input.content,
-            isDefault: input.isDefault,
-        },
-    }).then(async (resumeBase) => {
+    return Promise.resolve(resumeBase).then(async (savedResumeBase) => {
         invalidateMasterSkillsCache(userId);
         return {
-            ...resumeBase,
+            ...savedResumeBase,
             pdfFilePath: input.content || input.template
-                ? await createResumeBasePdf(userId, resumeBase.id, input.content ?? resumeBase.content, input.template)
-                : resumeBasePdfPath(userId, resumeBase.id),
+                ? await createResumeBasePdf(userId, savedResumeBase.id, input.content ?? savedResumeBase.content, input.template)
+                : resumeBasePdfPath(userId, savedResumeBase.id),
         };
     });
+}
+
+export function buildResumeBaseActivationUpdate(
+    resumeBaseId: string,
+    target: ResumeBaseTarget,
+    current: {
+        dailyAutomationFullstackResumeBaseId: string | null;
+        dailyAutomationBackendResumeBaseId: string | null;
+        dailyAutomationFrontendResumeBaseId: string | null;
+    },
+) {
+    return {
+        dailyAutomationFullstackResumeBaseId: target === "FULLSTACK" ? resumeBaseId
+            : current.dailyAutomationFullstackResumeBaseId === resumeBaseId ? null : undefined,
+        dailyAutomationBackendResumeBaseId: target === "BACKEND" ? resumeBaseId
+            : current.dailyAutomationBackendResumeBaseId === resumeBaseId ? null : undefined,
+        dailyAutomationFrontendResumeBaseId: target === "FRONTEND" ? resumeBaseId
+            : current.dailyAutomationFrontendResumeBaseId === resumeBaseId ? null : undefined,
+    };
 }
 
 export async function deleteUserResumeBase(userId: string, resumeBaseId: string) {

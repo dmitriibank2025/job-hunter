@@ -13,12 +13,10 @@ import "dotenv/config";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { prisma } from "../infrastructure/prisma";
 import { retrieveRelevantChunks } from "../services/embedding.service";
-import { validateResumeAgainstJob } from "../services/ats-resume-validator.service";
+import { scoreResumePresentation } from "../services/resume-pipeline.service";
 
 const USER_ID = process.env.MCP_USER_ID;
-const JOB_ID = process.env.MCP_JOB_ID;
 
 const server = new McpServer({ name: "resume-tools", version: "1.0.0" });
 
@@ -35,7 +33,7 @@ server.registerTool(
     async ({ query, k }) => {
         if (!USER_ID) throw new Error("MCP_USER_ID not set");
         const chunks = await retrieveRelevantChunks(USER_ID, query, k ?? 6);
-        const payload = chunks.map((c) => ({ source: c.source, text: c.text }));
+        const payload = chunks.map((c) => ({ id: c.id, source: c.source, text: c.text, distance: c.distance }));
         return { content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
 );
@@ -44,23 +42,16 @@ server.registerTool(
     "score_document",
     {
         description:
-            "Score a full resume (markdown) against the target vacancy with the ATS/rubric evaluator. Returns score 0-100 and issues.",
+            "Check resume presentation: sections, length, generic language. This does not verify facts, provenance or job fit and cannot authorize rendering.",
         inputSchema: { markdown: z.string().describe("The complete resume in markdown.") },
     },
     async ({ markdown }) => {
-        if (!JOB_ID) throw new Error("MCP_JOB_ID not set");
-        const job = await prisma.job.findUniqueOrThrow({ where: { id: JOB_ID } });
-        const v = validateResumeAgainstJob(job, markdown);
+        const v = scoreResumePresentation(markdown);
         return {
             content: [
                 {
                     type: "text",
-                    text: JSON.stringify({
-                        score: v.score,
-                        qualityScore: v.qualityScore,
-                        issues: v.issues,
-                        missingImportantKeywords: v.missingImportantKeywords,
-                    }),
+                    text: JSON.stringify(v),
                 },
             ],
         };
