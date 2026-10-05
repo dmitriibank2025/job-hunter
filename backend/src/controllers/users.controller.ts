@@ -50,7 +50,8 @@ export async function updateProfile(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
     await requireUserAccess(req, userId);
     const input = userProfileSchema.parse(req.body ?? {});
-    const saved = await upsertUserProfile(userId, input);
+    const result = await upsertUserProfile(userId, input);
+    const saved = result.value;
 
     // Never return secrets/raw chat binding to the client.
     const { telegramBotToken, telegramChatId, ...safeProfile } = saved;
@@ -61,6 +62,8 @@ export async function updateProfile(req: Request, res: Response) {
             telegramHasBotToken: Boolean(telegramBotToken),
             telegramConnected: Boolean(telegramChatId),
         },
+        candidateRevision: result.candidateRevision,
+        resumeBases: result.resumeBases,
     });
 }
 
@@ -80,11 +83,13 @@ export async function updateTechnologies(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
     await requireUserAccess(req, userId);
     const input = userTechnologySchema.parse(req.body ?? {});
-    const technologies = await replaceUserTechnologies(userId, input.technologies);
+    const result = await replaceUserTechnologies(userId, input.technologies, input.expectedRevision);
 
     res.json({
         success: true,
-        technologies,
+        technologies: result.value,
+        candidateRevision: result.candidateRevision,
+        resumeBases: result.resumeBases,
     });
 }
 
@@ -92,11 +97,13 @@ export async function updateExperiences(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
     await requireUserAccess(req, userId);
     const input = userExperiencesSchema.parse(req.body ?? {});
-    const experiences = await replaceUserExperiences(userId, input.experiences);
+    const result = await replaceUserExperiences(userId, input.experiences, input.expectedRevision);
 
     res.json({
         success: true,
-        experiences,
+        experiences: result.value,
+        candidateRevision: result.candidateRevision,
+        resumeBases: result.resumeBases,
     });
 }
 
@@ -104,11 +111,13 @@ export async function updateProjects(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
     await requireUserAccess(req, userId);
     const input = userProjectsSchema.parse(req.body ?? {});
-    const projects = await replaceUserProjects(userId, input.projects);
+    const result = await replaceUserProjects(userId, input.projects, input.expectedRevision);
 
     res.json({
         success: true,
-        projects,
+        projects: result.value,
+        candidateRevision: result.candidateRevision,
+        resumeBases: result.resumeBases,
     });
 }
 
@@ -116,11 +125,13 @@ export async function updateEducations(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
     await requireUserAccess(req, userId);
     const input = userEducationsSchema.parse(req.body ?? {});
-    const educations = await replaceUserEducations(userId, input.educations);
+    const result = await replaceUserEducations(userId, input.educations, input.expectedRevision);
 
     res.json({
         success: true,
-        educations,
+        educations: result.value,
+        candidateRevision: result.candidateRevision,
+        resumeBases: result.resumeBases,
     });
 }
 

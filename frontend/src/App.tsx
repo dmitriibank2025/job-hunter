@@ -496,6 +496,7 @@ export function App() {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        expectedRevision: user?.candidateRevision,
         fullName: settings.accountFullName,
         email: settings.accountEmail,
         ...rest,
@@ -518,18 +519,20 @@ export function App() {
     await api(`/users/${userId}/technologies`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ technologies }),
+      body: JSON.stringify({ technologies, expectedRevision: user?.candidateRevision }),
     });
+    const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
+    applyUser(loaded.user);
     setStatus("Technologies saved.");
   }
 
   async function saveHistory() {
     const userId = requireUserId();
-    await Promise.all([
-      api(`/users/${userId}/experiences`, {
+    const experienceResult = await api<{ candidateRevision: number }>(`/users/${userId}/experiences`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          expectedRevision: user?.candidateRevision,
           experiences: experiences
               .filter((item) => item.company && item.title)
               .map((item, sortOrder) => {
@@ -550,11 +553,12 @@ export function App() {
                 };
               }),
         }),
-      }),
-      api(`/users/${userId}/educations`, {
+      });
+    await api(`/users/${userId}/educations`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          expectedRevision: experienceResult.candidateRevision,
           educations: educations
               .filter((item) => item.institution && item.program)
               .map((item, sortOrder) => {
@@ -571,8 +575,9 @@ export function App() {
                 };
               }),
         }),
-      }),
-    ]);
+      });
+    const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
+    applyUser(loaded.user);
     setStatus("Experience and education saved.");
   }
 

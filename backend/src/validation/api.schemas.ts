@@ -105,6 +105,7 @@ export const authRefreshSchema = z.object({
 });
 
 export const userProfileSchema = z.object({
+    expectedRevision: z.coerce.number().int().min(0).optional(),
     fullName: z.string().trim().min(2),
     email: z.string().trim().email(),
     location: z.string().trim().optional(),
@@ -120,6 +121,7 @@ export const userProfileSchema = z.object({
 });
 
 export const userTechnologySchema = z.object({
+    expectedRevision: z.coerce.number().int().min(0).optional(),
     technologies: z.array(z.object({
         name: z.string().trim().min(1),
         category: z.string().trim().optional(),
@@ -128,6 +130,7 @@ export const userTechnologySchema = z.object({
 });
 
 export const userExperiencesSchema = z.object({
+    expectedRevision: z.coerce.number().int().min(0).optional(),
     experiences: z.array(z.object({
         id: z.string().trim().uuid().optional(),
         company: z.string().trim().min(1),
@@ -145,6 +148,7 @@ export const userExperiencesSchema = z.object({
 });
 
 export const userEducationsSchema = z.object({
+    expectedRevision: z.coerce.number().int().min(0).optional(),
     educations: z.array(z.object({
         id: z.string().trim().uuid().optional(),
         institution: z.string().trim().min(1),
@@ -158,6 +162,7 @@ export const userEducationsSchema = z.object({
 });
 
 export const userProjectsSchema = z.object({
+    expectedRevision: z.coerce.number().int().min(0).optional(),
     projects: z.array(z.object({
         id: z.string().trim().uuid().optional(),
         type: z.enum(["PERSONAL", "EDUCATIONAL", "OPEN_SOURCE"]).optional(),

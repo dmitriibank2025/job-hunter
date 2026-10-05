@@ -1,6 +1,7 @@
 import {
     CandidateExperienceType,
     CandidateProjectType,
+    Prisma,
     UserJobStatus,
     ResumeBaseTarget,
     SubscriptionPlan,
@@ -18,9 +19,11 @@ import { linkedInStorageStatePathForUser, validateLinkedInStorageStatePath } fro
 import { BasicResumePdfTemplate, createBasicResumePdf } from "./resume-pdf.service";
 import { convertDocxToPdf, createStyledResumeDocx } from "./docx.service";
 import { invalidateMasterSkillsCache } from "./job-analyzer.service";
+import { HttpError } from "../errorHandler/http-error";
 import { refreshCandidateFactsInTransaction } from "./candidate-facts.service";
 import {
     buildResumeBaseDefinition,
+    readResumeBaseDefinition,
     resolveResumeBaseUpdate,
 } from "./resume-base-lifecycle.service";
 
@@ -233,6 +236,7 @@ export type WorkspaceCandidateProfile = {
 };
 
 type ProfileInput = {
+    expectedRevision?: number;
     fullName: string;
     email: string;
     location?: string | null;
@@ -243,6 +247,18 @@ type ProfileInput = {
     languages?: string[];
     summary?: string | null;
     telegramBotToken?: string | null;
+};
+
+export type CandidateMutationResult<T> = {
+    value: T;
+    candidateRevision: number;
+    resumeBases: Array<{
+        id: string;
+        content: string;
+        sourceRevision: number | null;
+        renderStatus: "CURRENT" | "STALE" | "PROCESSING" | "FAILED";
+        pdfFilePath: string | null;
+    }>;
 };
 
 type ExperienceInput = {
@@ -312,6 +328,116 @@ function selectTechnologyNames(
     return technologies
         .filter((technology) => !categories || categories.has(technology.category))
         .map((technology) => technology.name);
+}
+
+async function assertCandidateRevision(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    expectedRevision?: number,
+) {
+    // Lock the user row so two concurrent saves cannot both pass the same
+    // revision check and overwrite one another under READ COMMITTED isolation.
+    const rows = await tx.$queryRaw<Array<{ candidateRevision: number }>>`
+        SELECT "candidateRevision"
+        FROM "AppUser"
+        WHERE "id" = ${userId}
+        FOR UPDATE
+    `;
+    if (!rows[0]) throw new Error("User not found.");
+    assertExpectedCandidateRevision(expectedRevision, rows[0].candidateRevision);
+}
+
+export function assertExpectedCandidateRevision(expectedRevision: number | undefined, currentRevision: number) {
+    if (expectedRevision !== undefined && currentRevision !== expectedRevision)
+        throw new HttpError(
+            409,
+            `Candidate data changed since it was loaded (expected revision ${expectedRevision}, current revision ${currentRevision}). Reload and retry.`,
+        );
+}
+
+export async function rebuildLinkedResumeBasesInTransaction(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    candidateRevision: number,
+) {
+    const user = await tx.appUser.findUniqueOrThrow({
+        where: { id: userId },
+        include: {
+            profile: true,
+            technologies: true,
+            experiences: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
+            projects: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
+            educations: { orderBy: [{ sortOrder: "asc" }, { endDate: "desc" }] },
+            resumeBases: { where: { mode: "LINKED" }, orderBy: { createdAt: "asc" } },
+        },
+    });
+    if (!user.profile) return [];
+
+    const rebuilt = [];
+    for (const base of user.resumeBases) {
+        const definition = readResumeBaseDefinition(base.definition, base);
+        const content = buildResumeContent({
+            profile: user.profile,
+            technologies: selectTechnologyNames(user.technologies, base.target),
+            experiences: user.experiences,
+            projects: user.projects,
+            educations: user.educations,
+            targetTitle: base.targetTitle ?? undefined,
+        });
+        await tx.userResumeBase.update({
+            where: { id: base.id },
+            data: {
+                content,
+                sourceRevision: candidateRevision,
+                definition,
+                renderStatus: "PROCESSING",
+            },
+        });
+        rebuilt.push({ id: base.id, content, template: definition.template });
+    }
+    return rebuilt;
+}
+
+async function renderSynchronizedResumeBases(
+    userId: string,
+    rebuilt: Array<{ id: string; content: string; template: BasicResumePdfTemplate }>,
+) {
+    return Promise.all(rebuilt.map(async base => {
+        try {
+            const pdfFilePath = await createResumeBasePdf(userId, base.id, base.content, base.template);
+            const saved = await prisma.userResumeBase.update({
+                where: { id: base.id },
+                data: { renderStatus: "CURRENT" },
+                select: { id: true, content: true, sourceRevision: true, renderStatus: true },
+            });
+            return { ...saved, pdfFilePath };
+        } catch (error) {
+            const failed = await prisma.userResumeBase.update({
+                where: { id: base.id },
+                data: { renderStatus: "FAILED" },
+                select: { id: true, content: true, sourceRevision: true, renderStatus: true },
+            });
+            console.error(`[resume-base] Failed to render synchronized base ${base.id}:`, error);
+            return { ...failed, pdfFilePath: await resumeBasePdfPathIfExists(userId, base.id) };
+        }
+    }));
+}
+
+async function runCandidateMutation<T>(
+    userId: string,
+    expectedRevision: number | undefined,
+    mutate: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<CandidateMutationResult<T>> {
+    const committed = await prisma.$transaction(async tx => {
+        await assertCandidateRevision(tx, userId, expectedRevision);
+        const value = await mutate(tx);
+        const candidateRevision = await refreshCandidateFactsInTransaction(tx, userId);
+        const rebuilt = await rebuildLinkedResumeBasesInTransaction(tx, userId, candidateRevision);
+        return { value, candidateRevision, rebuilt };
+    }, { timeout: 30000 });
+    const resumeBases = await renderSynchronizedResumeBases(userId, committed.rebuilt);
+    invalidateMasterSkillsCache(userId);
+    return { value: committed.value, candidateRevision: committed.candidateRevision, resumeBases };
 }
 
 export async function registerWorkspaceUser(input: {
@@ -625,7 +751,7 @@ export async function upsertUserProfile(userId: string, input: ProfileInput) {
     const allowedLanguages = new Set<string>(LANGUAGE_OPTIONS);
     const languages = cleanList(input.languages).filter((language) => allowedLanguages.has(language));
 
-    return prisma.$transaction(async tx => {
+    return runCandidateMutation(userId, input.expectedRevision, async tx => {
         const profile = await tx.userProfile.upsert({
             where: { userId },
             create: {
@@ -660,7 +786,6 @@ export async function upsertUserProfile(userId: string, input: ProfileInput) {
                 // telegramChatId intentionally omitted — never client-managed.
             },
         });
-        await refreshCandidateFactsInTransaction(tx, userId);
         return profile;
     });
 }
@@ -706,8 +831,12 @@ export async function upsertUserJobMatch(userId: string, jobId: string, input: {
     });
 }
 
-export async function replaceUserTechnologies(userId: string, technologies: Array<{ name: string; category?: string; level?: string }>) {
-    return prisma.$transaction(async tx => {
+export async function replaceUserTechnologies(
+    userId: string,
+    technologies: Array<{ name: string; category?: string; level?: string }>,
+    expectedRevision?: number,
+) {
+    return runCandidateMutation(userId, expectedRevision, async tx => {
         await tx.userTechnology.deleteMany({ where: { userId } });
         if (technologies.length) {
             await tx.userTechnology.createMany({
@@ -723,7 +852,6 @@ export async function replaceUserTechnologies(userId: string, technologies: Arra
                 skipDuplicates: true,
             });
         }
-        await refreshCandidateFactsInTransaction(tx, userId);
         return tx.userTechnology.findMany({
             where: { userId },
             orderBy: [{ category: "asc" }, { name: "asc" }],
@@ -731,8 +859,8 @@ export async function replaceUserTechnologies(userId: string, technologies: Arra
     });
 }
 
-export async function replaceUserExperiences(userId: string, experiences: ExperienceInput[]) {
-    return prisma.$transaction(async tx => {
+export async function replaceUserExperiences(userId: string, experiences: ExperienceInput[], expectedRevision?: number) {
+    return runCandidateMutation(userId, expectedRevision, async tx => {
         const requestedIds = experiences.flatMap((item) => item.id ? [item.id] : []);
         if (new Set(requestedIds).size !== requestedIds.length) throw new Error("Duplicate experience IDs are not allowed.");
         if (requestedIds.length) {
@@ -763,7 +891,6 @@ export async function replaceUserExperiences(userId: string, experiences: Experi
         await tx.userExperience.deleteMany({
             where: { userId, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
         });
-        await refreshCandidateFactsInTransaction(tx, userId);
         return tx.userExperience.findMany({
             where: { userId },
             orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }],
@@ -771,8 +898,8 @@ export async function replaceUserExperiences(userId: string, experiences: Experi
     });
 }
 
-export async function replaceUserEducations(userId: string, educations: EducationInput[]) {
-    return prisma.$transaction(async tx => {
+export async function replaceUserEducations(userId: string, educations: EducationInput[], expectedRevision?: number) {
+    return runCandidateMutation(userId, expectedRevision, async tx => {
         const requestedIds = educations.flatMap((item) => item.id ? [item.id] : []);
         if (new Set(requestedIds).size !== requestedIds.length) throw new Error("Duplicate education IDs are not allowed.");
         if (requestedIds.length) {
@@ -799,7 +926,6 @@ export async function replaceUserEducations(userId: string, educations: Educatio
         await tx.userEducation.deleteMany({
             where: { userId, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
         });
-        await refreshCandidateFactsInTransaction(tx, userId);
         return tx.userEducation.findMany({
             where: { userId },
             orderBy: [{ sortOrder: "asc" }, { endDate: "desc" }],
@@ -807,8 +933,8 @@ export async function replaceUserEducations(userId: string, educations: Educatio
     });
 }
 
-export async function replaceUserProjects(userId: string, projects: ProjectInput[]) {
-    return prisma.$transaction(async tx => {
+export async function replaceUserProjects(userId: string, projects: ProjectInput[], expectedRevision?: number) {
+    return runCandidateMutation(userId, expectedRevision, async tx => {
         const requestedIds = projects.flatMap((item) => item.id ? [item.id] : []);
         if (new Set(requestedIds).size !== requestedIds.length) throw new Error("Duplicate project IDs are not allowed.");
         if (requestedIds.length) {
@@ -838,7 +964,6 @@ export async function replaceUserProjects(userId: string, projects: ProjectInput
         await tx.userProject.deleteMany({
             where: { userId, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
         });
-        await refreshCandidateFactsInTransaction(tx, userId);
         return tx.userProject.findMany({
             where: { userId },
             orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }],
@@ -929,6 +1054,7 @@ export async function createUserResumeBase(userId: string, input: {
             profile: true,
             technologies: true,
             experiences: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
+            projects: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
             educations: { orderBy: [{ sortOrder: "asc" }, { endDate: "desc" }] },
             _count: { select: { resumeBases: true } },
         },
@@ -949,6 +1075,7 @@ export async function createUserResumeBase(userId: string, input: {
         profile: user.profile,
         technologies: selectedTechnologies,
         experiences: user.experiences,
+        projects: user.projects,
         educations: user.educations,
         targetTitle: input.targetTitle,
     });
@@ -1327,7 +1454,7 @@ export async function getAdminUser(userId: string) {
     };
 }
 
-function buildResumeContent(input: {
+export function buildResumeContent(input: {
     profile: ProfileInput;
     technologies: string[];
     experiences: Array<{
@@ -1337,6 +1464,16 @@ function buildResumeContent(input: {
         startDate: string;
         endDate?: string | null;
         project?: string | null;
+        description?: string | null;
+        bullets: string[];
+        technologies: string[];
+    }>;
+    projects?: Array<{
+        name: string;
+        role?: string | null;
+        url?: string | null;
+        startDate?: string | null;
+        endDate?: string | null;
         description?: string | null;
         bullets: string[];
         technologies: string[];
@@ -1386,12 +1523,21 @@ function buildResumeContent(input: {
         const details = item.details.map((detail) => `- ${detail}`);
         return [heading, dates, ...details].filter(Boolean).join("\n");
     });
+    const projects = (input.projects ?? []).map((item) => {
+        const heading = `### ${item.name}${item.role ? ` | ${item.role}` : ""}${item.url ? ` | ${item.url}` : ""}`;
+        const dates = item.startDate || item.endDate ? formatDateRange(item.startDate, item.endDate) : "";
+        const description = item.description || "";
+        const bullets = item.bullets.map((bullet) => `- ${bullet}`);
+        const technologies = item.technologies.length ? `Technologies: ${item.technologies.join(", ")}` : "";
+        return [heading, dates, description, ...bullets, technologies].filter(Boolean).join("\n");
+    });
 
     return [
         header,
         profile.summary ?? "",
         section("Skills", [skills]),
         section("Experience", experience),
+        section("Personal Projects", projects),
         section("Education", education),
     ].filter(Boolean).join("\n\n");
 }
