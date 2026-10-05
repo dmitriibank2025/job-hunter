@@ -1,5 +1,3 @@
-import fs from "fs";
-import path from "path";
 import {
   assignRequirementIds,
   buildEvidenceCorpus,
@@ -20,10 +18,53 @@ import {
 } from "../services/resume-pipeline.service";
 import { buildRoleResumeVariant } from "../services/resume-role-variant.service";
 
-const base = fs.readFileSync(
-  path.join(__dirname, "../data/base-resumes/fullstack.md"),
-  "utf8",
-);
+// Keep CI independent of the ignored, PII-bearing production resume source.
+// This synthetic fixture preserves only the structural facts exercised here.
+const base = `DMITRII BANK
+Full Stack Engineer | Node.js | TypeScript | React
+Rishon LeZion, Israel | candidate@example.test
+
+SUMMARY
+Full Stack Engineer with 4+ years of commercial experience building production systems with Node.js, TypeScript, and React.
+Commercial experience includes cloud-native applications, REST APIs, and event-driven workflows on AWS.
+Independent projects include AI/LLM engineering with OpenAI, RAG, and pgvector.
+
+SKILLS
+Backend: Node.js, TypeScript, Express, PostgreSQL, AWS, SQS
+Frontend: React, JavaScript
+
+EXPERIENCE
+2024 – Present | Full Stack Developer | Optimadevs
+Production platform development
+• Built event-driven workflows with AWS Lambda and SQS.
+• Developed Node.js and TypeScript REST APIs.
+Technologies: Node.js, TypeScript, AWS, SQS, PostgreSQL
+
+2022 – 2024 | Full Stack Developer | VTA Center
+Commercial web application development
+• Built React interfaces backed by Node.js services.
+• Maintained PostgreSQL-backed application workflows.
+Technologies: React, Node.js, TypeScript, PostgreSQL
+
+PERSONAL PROJECTS
+2026 – Present | AI Content Generation & Evaluation Platform (LLM / Agentic) | Node.js · TypeScript · OpenAI GPT-4.1 · MCP · pgvector · Prisma · PostgreSQL
+• Built a tool-using LLM agent with OpenAI function calling and MCP, orchestrating a multi-step plan → retrieve → draft → evaluate → revise workflow.
+• Implemented RAG over structured experience data using OpenAI embeddings, PostgreSQL/pgvector, cosine similarity, and HNSW indexing for scalable semantic retrieval.
+• Built an automated evaluation harness with a deterministic ATS/consistency scorer, achieving a 68% pass@75 baseline across 19 test cases while tracking tokens and p50/p95 latency.
+• Built an LLMOps feedback loop that analyzes rejection patterns and generates confidence-scored prompt rules that are automatically incorporated into subsequent generation runs.
+• Implemented layered guardrails combining source grounding and prompt constraints with deterministic technology allowlists, seniority enforcement, and post-generation validation.
+• Used Claude Code and Codex for repository analysis, implementation planning, test generation, refactoring, and code review, with human validation of critical changes.
+Technologies: Node.js, TypeScript, OpenAI GPT-4.1, MCP, pgvector, Prisma, PostgreSQL
+
+2025 – 2026 | Online Learning Platform (Turborepo Monorepo) | NestJS 11 · Next.js 15 · Prisma · PostgreSQL · Stripe · GCP | github.com/DmitriiBank/abcd-platform
+• Built a public website, admin panel, and backend services for an online learning platform with lead management, Stripe payments, and paid-access validation.
+• Implemented health endpoints, Prometheus metrics, and GCP Cloud Run CI/CD with Cloud SQL and managed secrets.
+• Structured the platform as modular NestJS services for auth, course, lesson, purchase, video, access, lead, and user workflows.
+• Secured auth with argon2, JWT tokenVersion invalidation for forced logout, and HttpOnly refresh-token cookies.
+Technologies: NestJS 11, Next.js 15, Prisma, PostgreSQL, Stripe, GCP
+
+EDUCATION
+Master's degree, Computer Science & Medical Informatics | Moscow State University of Medicine & Dentistry (MSUMD), Russia`;
 const corpus = buildEvidenceCorpus(base, "Dmitrii Bank");
 const requirement = {
   term: "Node.js",
@@ -73,7 +114,7 @@ function makeResume(): EvidenceResume {
         description: facts.filter((e) => e.kind === "description").map(claim),
         bullets: facts
           .filter((e) => e.kind === "bullet")
-          .slice(0, 3)
+          .slice(0, context === "personal" ? undefined : 3)
           .map(claim),
         technologies: facts.filter((e) => e.kind === "technology").map(claim),
       };
@@ -183,15 +224,15 @@ describe("verified evidence and deterministic validation", () => {
       result.hardFailures.some((f) => f.code === "PROHIBITED_AI_CLAIM"),
     ).toBe(true);
   });
-  test("current source education is retained without injecting a historical degree", () => {
+  test("current source education is retained exactly", () => {
     expect(corpus.entityIds.commercial).toHaveLength(2);
     expect(
-      corpus.evidence.some((e) => /AVSD|Master's degree|Tel-Ran/.test(e.text)),
+      corpus.evidence.some((e) => /AVSD|D\.M\.D|Tel-Ran/.test(e.text)),
     ).toBe(false);
-    expect(fact("education").text).toContain("D.M.D., Dental Medicine");
+    expect(fact("education").text).toContain("Master's degree, Computer Science & Medical Informatics");
     expect(fact("summary").text).toContain("4+ years of commercial experience");
     const other = buildEvidenceCorpus(base, "Someone Else");
-    expect(other.evidence.some((e) => /Dental Medicine/.test(e.text))).toBe(
+    expect(other.evidence.some((e) => /Computer Science & Medical Informatics/.test(e.text))).toBe(
       true,
     );
     expect(() =>
@@ -299,6 +340,19 @@ describe("verified evidence and deterministic validation", () => {
         (f) => f.code === "PERSONAL_TO_COMMERCIAL" && f.penalty === 30,
       ),
     ).toBe(true);
+  });
+  test("missing project, project fact, or education hard-fails", () => {
+    const missingProject = makeResume();
+    missingProject.projects.pop();
+    expect(validate(missingProject).hardFailures.some((failure) => failure.code === "MISSING_PERSONAL_PROJECT")).toBe(true);
+
+    const missingBullet = makeResume();
+    missingBullet.projects[0].bullets.pop();
+    expect(validate(missingBullet).hardFailures.some((failure) => failure.code === "INCOMPLETE_PERSONAL_PROJECT")).toBe(true);
+
+    const missingEducation = makeResume();
+    missingEducation.education = [];
+    expect(validate(missingEducation).hardFailures.some((failure) => failure.code === "MISSING_EDUCATION")).toBe(true);
   });
   test("cross-employer evidence and foreign IDs are rejected", () => {
     const resume = makeResume();
@@ -434,7 +488,9 @@ describe("pipeline stages and fail-closed repair", () => {
     ]);
     expect(result.validation.valid).toBe(true);
     expect(result.retrieval[0].admittedEvidenceIds).toContain(node.id);
-    expect(result.content).toContain("D.M.D., Dental Medicine");
+    expect(result.content).toContain("Master's degree, Computer Science & Medical Informatics");
+    expect(result.content).toContain("AI Content Generation & Evaluation Platform");
+    expect(result.content).toContain("Online Learning Platform (Turborepo Monorepo)");
     expect(result.content).not.toContain("AVSD+");
   });
   test("quality issues on PASS trigger repair and revalidation", async () => {

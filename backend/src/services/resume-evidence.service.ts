@@ -249,8 +249,7 @@ export function buildEvidenceCorpus(
           add(item.trim(), "skill", "profile", match[1]);
       }
     } else if (section === "education") {
-      if (!dmitrii || /^D\.M\.D\., Dental Medicine\s*\|/i.test(line))
-        add(line.replace(/^[-*•●]\s*/, ""), "education");
+      add(line.replace(/^[-*•●]\s*/, ""), "education");
     } else {
       const context = section as "commercial" | "personal";
       if (/^(?:19|20)\d{2}.*\|/.test(line)) {
@@ -622,6 +621,41 @@ export function validateEvidenceResume(
         "experience",
         "Commercial employment must be retained",
       );
+  for (const id of corpus.entityIds.personal) {
+    if (!seen.has(id)) {
+      fail(
+        "MISSING_PERSONAL_PROJECT",
+        "projects",
+        "Every verified personal project must be retained",
+      );
+      continue;
+    }
+    const sourceFacts = corpus.evidence.filter(
+      (e) =>
+        e.entityId === id &&
+        ["description", "bullet", "technology"].includes(e.kind),
+    );
+    const selectedClaims = resume.projects
+      .filter((entry) => entry.entityId === id)
+      .flatMap((entry) => [
+        ...entry.description,
+        ...entry.bullets,
+        ...entry.technologies,
+      ]);
+    for (const sourceFact of sourceFacts)
+      if (
+        !selectedClaims.some(
+          (claim) =>
+            claim.text === sourceFact.text &&
+            claim.evidenceIds.includes(sourceFact.id),
+        )
+      )
+        fail(
+          "INCOMPLETE_PERSONAL_PROJECT",
+          "projects",
+          `Verified project fact was omitted: ${sourceFact.text}`,
+        );
+  }
   resume.education.forEach((c, i) => {
     check(c, `education.${i}`, ["education"]);
     if (
@@ -638,6 +672,21 @@ export function validateEvidenceResume(
         "Education must match verified evidence",
       );
   });
+  for (const sourceEducation of corpus.evidence.filter(
+    (e) => e.kind === "education",
+  ))
+    if (
+      !resume.education.some(
+        (claim) =>
+          claim.text === sourceEducation.text &&
+          claim.evidenceIds.includes(sourceEducation.id),
+      )
+    )
+      fail(
+        "MISSING_EDUCATION",
+        "education",
+        `Verified education was omitted: ${sourceEducation.text}`,
+      );
   const coverage = (rs: Requirement[]) =>
     rs.length
       ? (100 *
