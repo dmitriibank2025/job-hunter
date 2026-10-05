@@ -708,7 +708,11 @@ export function App() {
           userId,
           resumeBaseId: selectedResumeBaseId || undefined,
           resumeBaseIds: selectedResumeBaseIds,
-          ...manualJob,
+          url: manualJob.url.trim() || undefined,
+          title: manualJob.title.trim() || undefined,
+          company: manualJob.company.trim() || undefined,
+          location: manualJob.location.trim() || undefined,
+          description: manualJob.description.trim() || undefined,
         }),
       });
       addStep("Analyzing job fit with AI...");

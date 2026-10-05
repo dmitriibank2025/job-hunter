@@ -12,6 +12,8 @@ import {
 } from "./resume-generator.service";
 import { createJobSchema } from "../validation";
 import type { ResumeBaseSelectionMap } from "./resume-base-selector.service";
+import { HttpError } from "../errorHandler/http-error";
+import { extractJobPostingFromHtml } from "../providers/structured-job-extractor";
 
 export type ManualVacancyInput = {
     title?: string;
@@ -54,13 +56,34 @@ function inferTitleFromDescription(description: string): string {
 export function normalizeManualUrl(url?: string): string | undefined {
     if (!url) return undefined;
 
-    const parsed = new URL(url);
+    let parsed: URL;
+    try {
+        parsed = new URL(url);
+    } catch {
+        throw new HttpError(400, "Enter a valid vacancy URL.");
+    }
 
     if (!["http:", "https:"].includes(parsed.protocol)) {
-        throw new Error("Vacancy URL must start with http:// or https://.");
+        throw new HttpError(400, "Vacancy URL must start with http:// or https://.");
+    }
+
+    if (parsed.username || parsed.password) {
+        throw new HttpError(400, "Vacancy URL must not contain embedded credentials.");
+    }
+
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    const privateIpv4 = /^(?:127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(host);
+    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host === "::1" || privateIpv4) {
+        throw new HttpError(400, "Vacancy URL must point to a public website.");
     }
 
     return parsed.toString();
+}
+
+export function selectManualDescription(provided?: string, extracted?: string): string | undefined {
+    const manual = provided?.trim();
+    const fromPage = extracted?.trim();
+    return manual && manual.length >= 50 ? manual : fromPage && fromPage.length >= 50 ? fromPage : undefined;
 }
 
 async function getLocatorText(page: Awaited<ReturnType<typeof newProviderPage>>, selectors: string[]) {
@@ -95,6 +118,16 @@ export async function extractManualVacancyFromUrl(url: string): Promise<Extracte
     try {
         await page.goto(url, { waitUntil: "domcontentloaded", timeout: Number(process.env.MANUAL_JOB_PAGE_TIMEOUT_MS ?? 30000) });
         await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => undefined);
+
+        const structured = extractJobPostingFromHtml(await page.content(), page.url(), "MANUAL");
+        if (structured) {
+            return {
+                title: structured.title,
+                company: structured.company,
+                location: structured.location,
+                description: structured.description,
+            };
+        }
 
         const title =
             await getMetaContent(page, [
@@ -146,17 +179,26 @@ export async function extractManualVacancyFromUrl(url: string): Promise<Extracte
 
 export async function processManualVacancy(userId: string, input: ManualVacancyInput) {
     const url = normalizeManualUrl(input.url);
-    const extracted: ExtractedManualVacancy = url ? await extractManualVacancyFromUrl(url) : {};
-    const description = input.description?.trim() || extracted.description?.trim();
+    const providedDescription = input.description?.trim();
+    let extracted: ExtractedManualVacancy = {};
+    if (url) {
+        try {
+            extracted = await extractManualVacancyFromUrl(url);
+        } catch (error) {
+            if (!providedDescription || providedDescription.length < 50) throw error;
+            console.warn("[Manual Vacancy] URL extraction failed; using user-provided vacancy text.", error instanceof Error ? error.message : error);
+        }
+    }
+    const description = selectManualDescription(providedDescription, extracted.description);
 
-    if (!description || description.length < 50) {
-        throw new Error("Could not extract enough vacancy text. Paste the job description manually or use a direct vacancy page URL.");
+    if (!description) {
+        throw new HttpError(422, "Could not extract enough vacancy text. Paste at least 50 characters from the job description.");
     }
 
     const data = createJobSchema.parse({
         title: input.title || extracted.title || inferTitleFromDescription(description),
         externalJobId: input.externalJobId,
-        company: input.company || extracted.company || "Manual vacancy",
+        company: input.company || extracted.company,
         location: input.location || extracted.location,
         url,
         source: "MANUAL",

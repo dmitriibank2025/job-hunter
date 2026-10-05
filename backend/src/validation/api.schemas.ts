@@ -2,6 +2,19 @@ import { z } from "zod";
 import { LANGUAGE_OPTIONS } from "../services/user-workspace.service";
 import { JOB_SEARCH_PROVIDER_NAMES } from "../providers/types";
 
+const blankToUndefined = (value: unknown) =>
+    typeof value === "string" && value.trim() === "" ? undefined : value;
+
+const optionalTrimmedString = (minimum = 1) => z.preprocess(
+    blankToUndefined,
+    z.string().trim().min(minimum).optional(),
+);
+
+const optionalUrl = z.preprocess(
+    blankToUndefined,
+    z.string().trim().url().optional(),
+);
+
 export const createJobSchema = z.object({
     title: z.string().min(2),
     externalJobId: z.string().trim().min(1).optional(),
@@ -14,12 +27,12 @@ export const createJobSchema = z.object({
 });
 
 export const manualVacancySchema = z.object({
-    title: z.string().trim().min(2).optional(),
-    externalJobId: z.string().trim().min(1).optional(),
-    company: z.string().trim().min(1).optional(),
-    location: z.string().trim().min(1).optional(),
-    url: z.string().trim().url().optional(),
-    description: z.string().trim().optional(),
+    title: optionalTrimmedString(2),
+    externalJobId: optionalTrimmedString(),
+    company: optionalTrimmedString(),
+    location: optionalTrimmedString(),
+    url: optionalUrl,
+    description: optionalTrimmedString(),
     userId: z.string().trim().uuid().optional(),
     resumeBaseId: z.string().trim().uuid().optional(),
     resumeBaseIds: z.object({

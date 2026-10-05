@@ -21,7 +21,14 @@ export const JOB_SEARCH_PROVIDER_NAMES = [
 
 export type JobSearchProviderName = typeof JOB_SEARCH_PROVIDER_NAMES[number];
 
-export type JobSource = JobSearchProviderName | "EMAIL_LINK" | "MOCK";
+export type JobSource = JobSearchProviderName
+    | "EMAIL_LINK"
+    | "EMAIL"
+    | "MANUAL"
+    | "LOCAL_APPLICATION"
+    | "STORAGE_IMPORT"
+    | "ATS_REFRESH"
+    | "MOCK";
 
 export type JobPageClassification =
     | "job_detail"
