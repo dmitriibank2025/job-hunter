@@ -16,6 +16,7 @@ type BoardConfig = {
     locationSelector?: string;
     postedAtSelector?: string;
     detailSelectors?: SourceDomSelectors;
+    unavailableReason?: string;
 };
 
 type BoardCard = {
@@ -25,6 +26,7 @@ type BoardCard = {
     url: string;
     postedAt?: string;
     description?: string;
+    detailUrl?: string;
 };
 
 function configuredUrls(config: BoardConfig): string[] {
@@ -78,6 +80,10 @@ export class PublicJobBoardProvider implements JobProvider {
         const searchUrls = configuredUrls(this.config);
         if (!searchUrls.length) {
             console.warn(`[${this.config.label}] No ${this.config.envName} configured — skipping.`);
+            if (this.config.unavailableReason) {
+                audit.reject({ classification: "category", reason: this.config.unavailableReason });
+                audit.log();
+            }
             this.auditReport = audit.report;
             return [];
         }
@@ -93,8 +99,21 @@ export class PublicJobBoardProvider implements JobProvider {
             for (const searchUrl of searchUrls) {
                 try {
                     await listPage.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
-                    await listPage.waitForTimeout(1_000);
-                    const extracted = await listPage.$$eval(this.config.linkSelector, (links, options) => links.map((node) => {
+                    let linkLocator = listPage.locator(this.config.linkSelector);
+                    await linkLocator.first()
+                        .waitFor({ state: "attached", timeout: 12_000 })
+                        .catch(() => undefined);
+                    if (await linkLocator.count() === 0) {
+                        // Some client-rendered boards occasionally return the
+                        // app shell before their first data request completes.
+                        // One bounded reload avoids reporting a false zero.
+                        await listPage.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+                        linkLocator = listPage.locator(this.config.linkSelector);
+                        await linkLocator.first()
+                            .waitFor({ state: "attached", timeout: 20_000 })
+                            .catch(() => undefined);
+                    }
+                    const extracted: BoardCard[] = await listPage.$$eval(this.config.linkSelector, (links, options) => links.map((node) => {
                         const link = node instanceof HTMLAnchorElement ? node : node.querySelector<HTMLAnchorElement>("a[href]");
                         const container = link?.closest("article,li,[data-job-id],[class*='job-card'],[class*='job_item'],[class*='position-card'],[class*='listing']");
                         const text = (container?.textContent ?? link?.textContent ?? "").replace(/\s+/g, " ").trim();
@@ -113,6 +132,42 @@ export class PublicJobBoardProvider implements JobProvider {
                         locationSelector: this.config.locationSelector,
                         postedAtSelector: this.config.postedAtSelector,
                     });
+
+                    // Employbl protects its own detail pages with a Vercel
+                    // checkpoint, but the public listing page exposes the
+                    // canonical employer ATS URL in __NEXT_DATA__. Resolve
+                    // that URL instead of treating the checkpoint as a job.
+                    if (this.source === "EMPLOYBL") {
+                        const listings = await listPage.evaluate(() => {
+                            const raw = document.querySelector("#__NEXT_DATA__")?.textContent;
+                            if (!raw) return [];
+                            try {
+                                const parsed = JSON.parse(raw) as {
+                                    props?: { pageProps?: { listings?: Array<{
+                                        id?: string | number;
+                                        url?: string;
+                                        company_name?: string;
+                                        listing_location?: string;
+                                        listing_updated_at?: string;
+                                        description?: string;
+                                    }> } } };
+                                return parsed.props?.pageProps?.listings ?? [];
+                            } catch {
+                                return [];
+                            }
+                        });
+                        for (const card of extracted) {
+                            const listing = listings.find((item) =>
+                                item.id && new RegExp(`-${item.id}/?$`).test(card.url),
+                            );
+                            if (!listing?.url) continue;
+                            card.detailUrl = listing.url;
+                            card.company ||= listing.company_name;
+                            card.location ||= listing.listing_location;
+                            card.postedAt ||= listing.listing_updated_at;
+                            card.description ||= listing.description;
+                        }
+                    }
 
                     audit.increment("discoveredUrls", extracted.length);
                     for (const card of extracted) {
@@ -143,7 +198,7 @@ export class PublicJobBoardProvider implements JobProvider {
                     audit.increment("detailPagesFetched");
                     const result = await extractSourceJobDetail({
                         page: detailPage,
-                        url: card.url,
+                        url: card.detailUrl ?? card.url,
                         source: this.source,
                         selectors: this.config.detailSelectors,
                         fallback: {
@@ -241,6 +296,7 @@ export const publicJobBoardProviders = () => ({
         source: "ETHOSIA", label: "Ethosia", envName: "ETHOSIA_SEARCH_URLS",
         defaultUrls: [],
         linkSelector: "a[href*='/job/'],a[href*='/jobs/'],a[href*='position']",
+        unavailableReason: "PUBLIC_LISTING_REQUIRES_ETHOSIA_PROFILE",
     }),
     NISHA: new PublicJobBoardProvider({
         source: "NISHA", label: "Nisha", envName: "NISHA_SEARCH_URLS",
@@ -257,15 +313,15 @@ export const publicJobBoardProviders = () => ({
     }),
     JOBIFY: new PublicJobBoardProvider({
         source: "JOBIFY", label: "Jobify", envName: "JOBIFY_SEARCH_URLS",
-        defaultUrls: ["https://jobify.run/tech/typescript-developer-jobs"],
-        linkSelector: "a[href*='jobify.run/jobs/']",
+        defaultUrls: ["https://jobify.run/jobs?country=IL&tags=TypeScript"],
+        linkSelector: "a[href^='/jobs/'],a[href*='jobify.run/jobs/']",
         companySelector: ".mt-1\\.5 span:first-child",
         locationSelector: ".mt-1\\.5 span:nth-child(2)",
         postedAtSelector: ".mt-1\\.5 span:nth-child(3)",
     }),
     EMPLOYBL: new PublicJobBoardProvider({
         source: "EMPLOYBL", label: "Employbl", envName: "EMPLOYBL_SEARCH_URLS",
-        defaultUrls: ["https://www.employbl.com/job-listings"],
-        linkSelector: "a[href*='employbl.com/jobs/']",
+        defaultUrls: ["https://www.employbl.com/jobs"],
+        linkSelector: "a[href^='/jobs/'],a[href*='employbl.com/jobs/']",
     }),
 });

@@ -50,7 +50,7 @@ async function main() {
             });
             const sourceAsCompany = jobs.filter((job) => job.company?.trim().toUpperCase() === source);
             const explicitlyForeignButEligible = jobs.filter((job) =>
-                /poland|romania|germany|france|spain|italy|united kingdom|united states|canada|india/i.test(job.location ?? "")
+                /poland|romania|germany|france|spain|italy|portugal|greece|colombia|south korea|united kingdom|united states|canada|india/i.test(job.location ?? "")
                 && job.ingestion?.locationEligibility === "ELIGIBLE",
             );
             console.log(`[Live Source Audit] ${JSON.stringify({

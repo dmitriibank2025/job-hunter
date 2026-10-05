@@ -11,7 +11,10 @@ const EXPLICIT_FOREIGN_TERMS = [
     "poland", "romania", "bucharest", "germany", "berlin", "munich", "france", "paris", "spain", "italy", "portugal",
     "united kingdom", "london", "united states", "usa", "new york", "san francisco", "boston", "chicago", "austin",
     "seattle", "california", "massachusetts", "texas", "canada", "toronto", "vancouver", "india", "australia", "singapore",
-    "netherlands", "sweden", "denmark", "ireland", "czech", "hungary", "ukraine",
+    "netherlands", "sweden", "denmark", "ireland", "czech", "hungary", "ukraine", "greece", "colombia",
+    "south korea", "bulgaria", "mexico", "brazil", "argentina", "chile", "united arab emirates", "japan", "china",
+    "philippines", "south africa", "turkey", "belgium", "austria", "switzerland", "norway", "finland", "estonia",
+    "latvia", "lithuania", "croatia", "serbia",
 ];
 
 const TECHNOLOGIES = [

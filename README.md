@@ -140,6 +140,11 @@ use `Company name|board-slug|eu`. Comeet uses
 treated as a clean skip. Browser-board entry points can be overridden through
 the corresponding `*_SEARCH_URLS` variables shown in `.env.example`.
 
+The example configuration includes the currently active `Nuvei|nuvei`
+Workable board. The collector supports both Workable's current top-level
+`city`/`state`/`country` and `published_on` fields and its older nested
+`location` response shape.
+
 Put these values in the repository-root `.env` file (not in the frontend):
 
 ```env

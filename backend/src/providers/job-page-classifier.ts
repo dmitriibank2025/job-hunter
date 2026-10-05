@@ -11,6 +11,7 @@ export type JobPageClassificationInput = {
     descriptionLength?: number;
     canonicalUrl?: string;
     breadcrumbText?: string;
+    hasSourceDetailUrl?: boolean;
 };
 
 export type JobPageClassificationResult = {
@@ -30,7 +31,6 @@ const CATEGORY_PATTERNS = [
     /\/jobs?\/(?:cat|category|area)\d+/i,
     /\/jobslobby\/(?!.*\/\d{5,}(?:-\d+)?\/?$).+\/?$/i,
     /\/career\/[^/?#]+\/?$/i,
-    /\/career\/(?![^?#]*\d{5,})[^/?#]+\/[^/?#]+\/?$/i,
     /\/jobs\/(?:titles|locations|companies|categories)\/?$/i,
 ];
 
@@ -47,6 +47,7 @@ const DETAIL_PATTERNS = [
     /\/job\/\d{4,}(?:\/|$)/i,
     /\/jobs\/view\/(?:[^/]*-)?\d{5,}/i,
     /\/jobs\/[^/?#]*\d{5,}/i,
+    /\/career\/[^/?#]+\/[^/?#]+\/?$/i,
     /\/career\/job\/[^/?#]*\d{5,}\/?$/i,
     /\/job-details?\//i,
     /\/positions?\/[^/?#]+\/?$/i,
@@ -83,6 +84,10 @@ export function classifyJobPage(input: JobPageClassificationInput): JobPageClass
     }
 
     let score = 0;
+    if (input.hasSourceDetailUrl) {
+        score += 35;
+        reasons.push("SOURCE_DETAIL_URL_CONTRACT");
+    }
     if (DETAIL_PATTERNS.some((pattern) => pattern.test(url))) {
         score += 35;
         reasons.push("JOB_DETAIL_URL_PATTERN");

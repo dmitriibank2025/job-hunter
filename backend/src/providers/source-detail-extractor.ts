@@ -58,6 +58,35 @@ function conciseError(error: unknown): string {
     return (error instanceof Error ? error.message : String(error)).split("\n", 1)[0].slice(0, 400);
 }
 
+export function mergeStructuredJobFallback(structured: ParsedJob, fallback: Partial<ParsedJob>): ParsedJob {
+    const company = structured.company ?? fallback.company;
+    const location = structured.location ?? fallback.location;
+    const postedAt = structured.postedAt ?? fallback.postedAt;
+    const employmentType = structured.employmentType ?? fallback.employmentType;
+    const applyUrl = structured.applyUrl ?? fallback.applyUrl;
+    const confidence = structured.ingestion?.fieldConfidence;
+
+    return {
+        ...structured,
+        company,
+        location,
+        postedAt,
+        employmentType,
+        applyUrl,
+        ingestion: structured.ingestion ? {
+            ...structured.ingestion,
+            fieldConfidence: confidence ? {
+                ...confidence,
+                company: confidence.company || (company ? 55 : 0),
+                location: confidence.location || (location ? 55 : 0),
+                postedAt: confidence.postedAt || (postedAt ? 50 : 0),
+                employmentType: confidence.employmentType || (employmentType ? 50 : 0),
+                applyUrl: confidence.applyUrl || (applyUrl ? 50 : 0),
+            } : confidence,
+        } : structured.ingestion,
+    };
+}
+
 export async function extractSourceJobDetail(input: {
     page: Page;
     url: string;
@@ -65,6 +94,7 @@ export async function extractSourceJobDetail(input: {
     selectors?: SourceDomSelectors;
     fallback?: Partial<ParsedJob>;
     navigationTimeoutMs?: number;
+    hasSourceDetailUrl?: boolean;
 }): Promise<DetailExtractionResult> {
     const { page, source, selectors = {}, fallback = {} } = input;
     try {
@@ -77,7 +107,7 @@ export async function extractSourceJobDetail(input: {
         const structured = extractJobPostingFromHtml(html, page.url(), source);
         if (structured) {
             return {
-                job: structured,
+                job: mergeStructuredJobFallback(structured, fallback),
                 method: "json_ld",
                 classification: classifyJobPage({ url: page.url(), hasJobPostingJsonLd: true }),
             };
@@ -108,6 +138,7 @@ export async function extractSourceJobDetail(input: {
             hasLocation: Boolean(location),
             descriptionLength: description.length,
             breadcrumbText: await firstText(page, ["[class*='breadcrumb']", "nav[aria-label*='breadcrumb']"]),
+            hasSourceDetailUrl: input.hasSourceDetailUrl,
         });
 
         if (classification.classification !== "job_detail" || !title || description.length < 80) {

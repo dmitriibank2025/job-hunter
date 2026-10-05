@@ -8,12 +8,14 @@ import { isPublicBoardJobDetailUrl } from "../providers/public-job-board.provide
 import { isDrushimJobDetailUrl } from "../providers/drushim.provider";
 import { isGotFriendsJobDetailUrl } from "../providers/gotfriends.provider";
 import { isSqlinkJobDetailUrl } from "../providers/sqlink.provider";
+import { getWorkableLocation, isPublishedWorkableJob } from "../providers/workable.provider";
 import { filterJobsBySearchPreferences } from "../services/search-preferences.service";
 import { parsePostedAt } from "../providers/browser-provider-utils";
 import { isAllJobsJobDetailUrl } from "../providers/alljobs.provider";
 import { stableExternalId } from "../providers/ats-provider-utils";
 import { normalizeJobUrl } from "../services/job-deduplication.service";
 import type { ParsedJob } from "../providers/types";
+import { mergeStructuredJobFallback } from "../providers/source-detail-extractor";
 
 const fixture = (name: string) => fs.readFileSync(path.join(__dirname, "fixtures", "job-sources", name), "utf8");
 
@@ -30,6 +32,27 @@ function job(overrides: Partial<ParsedJob> = {}): ParsedJob {
 }
 
 describe("job ingestion fixtures", () => {
+    it("fills optional JSON-LD gaps from verified list-card evidence", () => {
+        const structured = job({
+            company: "Elastic",
+            location: undefined,
+            postedAt: undefined,
+            ingestion: {
+                classification: "job_detail",
+                classificationReasons: ["JOB_POSTING_JSON_LD"],
+                extractionMethod: "json_ld",
+                fieldConfidence: { title: 100, company: 95, location: 0, postedAt: 0, description: 100 },
+            },
+        });
+        const postedAt = new Date("2026-10-04T00:00:00.000Z");
+        const merged = mergeStructuredJobFallback(structured, { location: "Greece", postedAt });
+
+        expect(merged.location).toBe("Greece");
+        expect(merged.postedAt).toBe(postedAt);
+        expect(merged.ingestion?.fieldConfidence?.location).toBe(55);
+        expect(merged.ingestion?.fieldConfidence?.postedAt).toBe(50);
+    });
+
     it("extracts a real JobPosting before DOM heuristics", () => {
         const parsed = extractJobPostingFromHtml(
             fixture("job-detail-jsonld.html"),
@@ -139,7 +162,7 @@ describe("source-specific detail URL contracts", () => {
     it.each([
         ["Drushim", isDrushimJobDetailUrl, "https://www.drushim.co.il/job/38512345/abc123/", "https://www.drushim.co.il/jobs/search/backend/"],
         ["GotFriends", isGotFriendsJobDetailUrl, "https://www.gotfriends.co.il/jobslobby/ai/ai-engineer/118511/", "https://www.gotfriends.co.il/jobslobby/ai/ai-engineer/"],
-        ["SQLink", isSqlinkJobDetailUrl, "https://www.sqlink.com/career/job/position-123456/", "https://www.sqlink.com/career/software/webmobile/"],
+        ["SQLink", isSqlinkJobDetailUrl, "https://www.sqlink.com/career/software/backend-nodejs-developer/", "https://www.sqlink.com/career/software/"],
     ])("%s accepts detail URLs and rejects discovery pages", (_name, check, detail, discovery) => {
         expect(check(detail)).toBe(true);
         expect(check(discovery)).toBe(false);
@@ -147,6 +170,29 @@ describe("source-specific detail URL contracts", () => {
 
     it("accepts GotFriends variant job IDs", () => {
         expect(isGotFriendsJobDetailUrl("https://www.gotfriends.co.il/jobslobby/software/backend-developer/155022-1/")).toBe(true);
+    });
+
+    it("recognizes current SQLink slug-only detail pages", () => {
+        const url = "https://www.sqlink.com/career/%D7%9E%D7%A9%D7%A8%D7%95%D7%AA-ai/%D7%9E%D7%A0%D7%94%D7%9C%D7%AA-%D7%A4%D7%A8%D7%95%D7%99%D7%A7%D7%98%D7%99-data-ai/";
+        expect(isSqlinkJobDetailUrl(url)).toBe(true);
+        expect(classifyJobPage({
+            url,
+            hasTitleHeading: true,
+            descriptionLength: 800,
+        }).classification).toBe("job_detail");
+    });
+
+    it("requires page evidence in addition to a source detail URL contract", () => {
+        expect(classifyJobPage({
+            url: "https://example.com/careers/backend-engineer",
+            hasSourceDetailUrl: true,
+            hasTitleHeading: true,
+            descriptionLength: 800,
+        }).classification).toBe("job_detail");
+        expect(classifyJobPage({
+            url: "https://example.com/careers/backend-engineer",
+            hasSourceDetailUrl: true,
+        }).classification).toBe("unknown");
     });
 
     it.each([
@@ -163,6 +209,24 @@ describe("source-specific detail URL contracts", () => {
 });
 
 describe("ATS discovery", () => {
+    it("reads locations from the current Workable API shape", () => {
+        expect(getWorkableLocation({
+            city: "Tel Aviv-Yafo",
+            state: "Tel Aviv District",
+            country: "Israel",
+        })).toBe("Tel Aviv-Yafo, Tel Aviv District, Israel");
+        expect(getWorkableLocation({
+            locations: [{ city: "Haifa", region: "Haifa District", country: "Israel" }],
+        })).toBe("Haifa, Haifa District, Israel");
+    });
+
+    it("does not confuse Workable's geographical state with publication state", () => {
+        expect(isPublishedWorkableJob({ state: "Tel Aviv District" })).toBe(true);
+        expect(isPublishedWorkableJob({ state: "published" })).toBe(true);
+        expect(isPublishedWorkableJob({ status: "closed", state: "Tel Aviv District" })).toBe(false);
+        expect(isPublishedWorkableJob({ state: "draft" })).toBe(false);
+    });
+
     it.each([
         ["greenhouse", "https://job-boards.greenhouse.io/innovid", "innovid"],
         ["lever", "https://jobs.lever.co/example", "example"],

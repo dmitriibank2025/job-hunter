@@ -19,8 +19,12 @@ export function isSqlinkJobDetailUrl(url: string): boolean {
         const parsed = new URL(url);
         if (!/sqlink\.com$/i.test(parsed.hostname.replace(/^www\./, ""))) return false;
         if (/\.(?:pdf|docx?|xlsx?|zip)$/i.test(parsed.pathname) || /\/media\//i.test(parsed.pathname)) return false;
-        if (/\/career\/(?:[^/]+\/){0,1}[^/]+\/?$/i.test(parsed.pathname) && !/\d{4,}/.test(url)) return false;
-        return /\d{5,}|jobid|positionid|\/job\//i.test(url);
+        const segments = parsed.pathname.split("/").filter(Boolean);
+        // Current SQLink URLs are /career/<category>/<vacancy-slug>/ and no
+        // longer expose the numeric vacancy id in the URL. Category pages have
+        // only /career/<category>/, while detail pages have a terminal slug.
+        if (segments[0]?.toLowerCase() !== "career" || segments.length < 3) return false;
+        return !["job", "jobs", "search", "results"].includes(segments.at(-1)!.toLowerCase());
     } catch {
         return false;
     }
@@ -43,7 +47,7 @@ export class SqlinkProvider implements JobProvider {
                 try {
                     await discoveryPage.goto(categoryUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
                     await discoveryPage.waitForTimeout(800);
-                    const links = await discoveryPage.$$eval("a[href]", (nodes) =>
+                    const links = await discoveryPage.$$eval("[id^='id-'] > a[href], .article > a[href]", (nodes) =>
                         [...new Set(nodes.map((node) => (node as HTMLAnchorElement).href))],
                     );
                     links.filter(isSqlinkJobDetailUrl).forEach((url) => urls.add(url));
@@ -62,11 +66,12 @@ export class SqlinkProvider implements JobProvider {
                     page: detailPage,
                     url,
                     source: "SQLINK",
+                    hasSourceDetailUrl: true,
                     selectors: {
-                        title: ["h1", ".job-title", "[class*='position-title']"],
+                        title: [".pageCareer h2", ".pageCareer h3", ".positionPage .article > a"],
                         company: ["[class*='company']", "[class*='employer']"],
                         location: ["[class*='location']", "[class*='area']"],
-                        description: ["[class*='job-description']", "[class*='description']", "main"],
+                        description: [".positionPage .article", ".positionPage", "#careerItem"],
                     },
                 });
                 if (!result.job) {
@@ -77,6 +82,9 @@ export class SqlinkProvider implements JobProvider {
                 audit.increment("classifiedJobPages");
                 audit.increment("normalizedJobs");
                 audit.increment(result.method === "json_ld" ? "structuredDataHits" : "domExtractionHits");
+                // The numeric marker appended to some detail headings is not
+                // part of the vacancy title shown on the category card.
+                result.job.title = result.job.title.replace(/\s*\(\d+\)\s*$/, "").trim();
                 jobs.push(result.job);
             }
             return jobs;
