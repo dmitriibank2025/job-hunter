@@ -129,8 +129,10 @@ export const userTechnologySchema = z.object({
 
 export const userExperiencesSchema = z.object({
     experiences: z.array(z.object({
+        id: z.string().trim().uuid().optional(),
         company: z.string().trim().min(1),
         title: z.string().trim().min(1),
+        type: z.enum(["COMMERCIAL", "FREELANCE", "INTERNSHIP", "VOLUNTEER"]).optional(),
         location: z.string().trim().optional(),
         startDate: z.string().trim().min(1),
         endDate: z.string().trim().optional(),
@@ -144,12 +146,29 @@ export const userExperiencesSchema = z.object({
 
 export const userEducationsSchema = z.object({
     educations: z.array(z.object({
+        id: z.string().trim().uuid().optional(),
         institution: z.string().trim().min(1),
         program: z.string().trim().min(1),
         location: z.string().trim().optional(),
         startDate: z.string().trim().optional(),
         endDate: z.string().trim().optional(),
         details: z.array(z.string().trim()).default([]),
+        sortOrder: z.coerce.number().int().optional(),
+    })).default([]),
+});
+
+export const userProjectsSchema = z.object({
+    projects: z.array(z.object({
+        id: z.string().trim().uuid().optional(),
+        type: z.enum(["PERSONAL", "EDUCATIONAL", "OPEN_SOURCE"]).optional(),
+        name: z.string().trim().min(1),
+        role: z.string().trim().optional(),
+        url: z.string().trim().url().optional(),
+        startDate: z.string().trim().optional(),
+        endDate: z.string().trim().optional(),
+        description: z.string().trim().optional(),
+        bullets: z.array(z.string().trim()).default([]),
+        technologies: z.array(z.string().trim()).default([]),
         sortOrder: z.coerce.number().int().optional(),
     })).default([]),
 });

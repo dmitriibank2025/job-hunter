@@ -11,6 +11,7 @@ import {
     updateEducations,
     updateExperiences,
     updateProfile,
+    updateProjects,
     updateResumeBase,
     updateSearchSettings,
     updateTechnologies,
@@ -25,6 +26,7 @@ export function createUsersRouter() {
     router.post("/:id/resume-file", uploadResumeFile);
     router.put("/:id/technologies", updateTechnologies);
     router.put("/:id/experiences", updateExperiences);
+    router.put("/:id/projects", updateProjects);
     router.put("/:id/educations", updateEducations);
     router.put("/:id/daily-automation", updateDailyAutomation);
     router.put("/:id/search-settings", updateSearchSettings);

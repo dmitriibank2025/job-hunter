@@ -332,8 +332,10 @@ export function App() {
     });
     setSelectedTech(new Set((nextUser.technologies || []).map((item) => item.name)));
     const loadedExperiences: ExperienceEntry[] = (nextUser.experiences || []).map((item: any) => ({
+      id: item.id,
       company: item.company || "",
       title: item.title || "",
+      type: item.type || "COMMERCIAL",
       location: item.location || "",
       dates: [item.startDate, item.endDate].filter(Boolean).join("-") || "2024-Present",
       project: item.project || "",
@@ -343,6 +345,7 @@ export function App() {
     }));
     setExperiences(loadedExperiences.length ? loadedExperiences : [emptyExperience]);
     const loadedEducations: EducationEntry[] = (nextUser.educations || []).map((item: any) => ({
+      id: item.id,
       institution: item.institution || "",
       program: item.program || "",
       location: item.location || "",
@@ -532,8 +535,10 @@ export function App() {
               .map((item, sortOrder) => {
                 const dates = splitDateRange(item.dates || "");
                 return {
+                  id: item.id,
                   company: item.company,
                   title: item.title,
+                  type: item.type || "COMMERCIAL",
                   location: item.location || undefined,
                   startDate: dates.startDate || "Present",
                   endDate: dates.endDate,
@@ -555,6 +560,7 @@ export function App() {
               .map((item, sortOrder) => {
                 const dates = splitDateRange(item.dates || "");
                 return {
+                  id: item.id,
                   institution: item.institution,
                   program: item.program,
                   location: item.location || undefined,

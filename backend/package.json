@@ -15,6 +15,7 @@
     "linkedin:auth": "tsx src/scripts/linkedin-recommended.ts auth",
     "linkedin:recommended": "tsx src/scripts/linkedin-recommended.ts extract",
     "audit:sources": "tsx src/scripts/audit-job-sources.ts",
+    "backfill:candidate-facts": "tsx src/scripts/backfill-candidate-facts.ts",
     "postinstall": "prisma generate",
     "prisma:generate": "dotenv -e ../.env -- prisma generate",
     "prisma:migrate:deploy": "dotenv -e ../.env -- prisma migrate deploy",

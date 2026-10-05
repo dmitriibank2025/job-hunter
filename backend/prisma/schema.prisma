@@ -36,6 +36,37 @@ enum ResumeBaseTarget {
   CUSTOM
 }
 
+enum CandidateExperienceType {
+  COMMERCIAL
+  FREELANCE
+  INTERNSHIP
+  VOLUNTEER
+}
+
+enum CandidateProjectType {
+  PERSONAL
+  EDUCATIONAL
+  OPEN_SOURCE
+}
+
+enum CandidateFactEntityType {
+  PROFILE
+  TECHNOLOGY
+  EXPERIENCE
+  PROJECT
+  EDUCATION
+}
+
+enum CandidateFactKind {
+  CONTACT
+  SUMMARY
+  HEADER
+  DESCRIPTION
+  BULLET
+  TECHNOLOGY
+  EDUCATION
+}
+
 enum UsageEventType {
   VACANCY_COLLECTED
   RESUME_GENERATED
@@ -59,12 +90,15 @@ model AppUser {
   dailyAutomationBackendResumeBaseId   String?
   dailyAutomationFrontendResumeBaseId  String?
   searchExcludeRemote    Boolean @default(false)
+  candidateRevision      Int     @default(0)
 
   profile               UserProfile?
   blacklistedCompanies  UserBlacklistedCompany[]
   technologies          UserTechnology[]
   experiences           UserExperience[]
+  projects              UserProject[]
   educations            UserEducation[]
+  candidateFacts        CandidateFact[]
   resumeBases           UserResumeBase[]
   linkedinAccounts      UserLinkedInAccount[]
   usageEvents           UserUsageEvent[]
@@ -196,6 +230,7 @@ model UserExperience {
   user         AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
   company      String
   title        String
+  type         CandidateExperienceType @default(COMMERCIAL)
   location     String?
   startDate    String
   endDate      String?
@@ -204,6 +239,27 @@ model UserExperience {
   bullets      String[] @default([])
   technologies String[] @default([])
   sortOrder    Int      @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, sortOrder])
+}
+
+model UserProject {
+  id           String               @id @default(uuid())
+  userId       String
+  user         AppUser              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type         CandidateProjectType @default(PERSONAL)
+  name         String
+  role         String?
+  url          String?
+  startDate    String?
+  endDate      String?
+  description  String?              @db.Text
+  bullets      String[]             @default([])
+  technologies String[]             @default([])
+  sortOrder    Int                  @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -227,6 +283,29 @@ model UserEducation {
   updatedAt DateTime @updatedAt
 
   @@index([userId, sortOrder])
+}
+
+/// Canonical, deterministic facts derived from structured user data.
+/// Resume claims and RAG chunks can reference these stable IDs without parsing
+/// a rendered base-resume document.
+model CandidateFact {
+  id         String                  @id
+  userId     String
+  user       AppUser                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityType CandidateFactEntityType
+  entityId   String
+  kind       CandidateFactKind
+  text       String                  @db.Text
+  verified   Boolean                 @default(true)
+  revision   Int
+  fingerprint String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, fingerprint])
+  @@index([userId, revision])
+  @@index([userId, entityType, entityId])
 }
 
 model UserResumeBase {

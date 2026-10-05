@@ -1,4 +1,6 @@
 import {
+    CandidateExperienceType,
+    CandidateProjectType,
     UserJobStatus,
     ResumeBaseTarget,
     SubscriptionPlan,
@@ -16,6 +18,7 @@ import { linkedInStorageStatePathForUser, validateLinkedInStorageStatePath } fro
 import { BasicResumePdfTemplate, createBasicResumePdf } from "./resume-pdf.service";
 import { convertDocxToPdf, createStyledResumeDocx } from "./docx.service";
 import { invalidateMasterSkillsCache } from "./job-analyzer.service";
+import { refreshCandidateFactsInTransaction } from "./candidate-facts.service";
 
 export type PlanLimit = {
     vacanciesPerDay: number;
@@ -239,8 +242,10 @@ type ProfileInput = {
 };
 
 type ExperienceInput = {
+    id?: string;
     company: string;
     title: string;
+    type?: CandidateExperienceType;
     location?: string;
     startDate: string;
     endDate?: string;
@@ -252,12 +257,27 @@ type ExperienceInput = {
 };
 
 type EducationInput = {
+    id?: string;
     institution: string;
     program: string;
     location?: string;
     startDate?: string;
     endDate?: string;
     details?: string[];
+    sortOrder?: number;
+};
+
+type ProjectInput = {
+    id?: string;
+    type?: CandidateProjectType;
+    name: string;
+    role?: string;
+    url?: string;
+    startDate?: string;
+    endDate?: string;
+    description?: string;
+    bullets?: string[];
+    technologies?: string[];
     sortOrder?: number;
 };
 
@@ -299,41 +319,45 @@ export async function registerWorkspaceUser(input: {
 }) {
     const email = input.email.trim().toLowerCase();
     const passwordHash = input.password ? await hashPassword(input.password) : undefined;
-    const user = await prisma.appUser.upsert({
-        where: { email },
-        create: {
-            email,
-            passwordHash,
-            plan: input.plan ?? "FREE",
-            role: input.role ?? "USER",
-            profile: input.fullName
-                ? {
-                    create: {
-                        fullName: input.fullName,
-                        email,
-                    },
-                }
-                : undefined,
-        },
-        update: {
-            plan: input.plan,
-            role: input.role,
-            ...(passwordHash ? { passwordHash } : {}),
-            profile: input.fullName
-                ? {
-                    upsert: {
+    const user = await prisma.$transaction(async tx => {
+        const saved = await tx.appUser.upsert({
+            where: { email },
+            create: {
+                email,
+                passwordHash,
+                plan: input.plan ?? "FREE",
+                role: input.role ?? "USER",
+                profile: input.fullName
+                    ? {
                         create: {
                             fullName: input.fullName,
                             email,
                         },
-                        update: {
-                            fullName: input.fullName,
+                    }
+                    : undefined,
+            },
+            update: {
+                plan: input.plan,
+                role: input.role,
+                ...(passwordHash ? { passwordHash } : {}),
+                profile: input.fullName
+                    ? {
+                        upsert: {
+                            create: {
+                                fullName: input.fullName,
+                                email,
+                            },
+                            update: {
+                                fullName: input.fullName,
+                            },
                         },
-                    },
-                }
-                : undefined,
-        },
-        include: { profile: true },
+                    }
+                    : undefined,
+            },
+            include: { profile: true },
+        });
+        const candidateRevision = await refreshCandidateFactsInTransaction(tx, saved.id);
+        return { ...saved, candidateRevision };
     });
 
     return {
@@ -551,6 +575,7 @@ export async function getWorkspaceUser(userId: string) {
             profile: true,
             technologies: { orderBy: [{ category: "asc" }, { name: "asc" }] },
             experiences: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
+            projects: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
             educations: { orderBy: [{ sortOrder: "asc" }, { endDate: "desc" }] },
             resumeBases: { orderBy: { createdAt: "desc" } },
             linkedinAccounts: { orderBy: { updatedAt: "desc" } },
@@ -591,39 +616,43 @@ export async function upsertUserProfile(userId: string, input: ProfileInput) {
     const allowedLanguages = new Set<string>(LANGUAGE_OPTIONS);
     const languages = cleanList(input.languages).filter((language) => allowedLanguages.has(language));
 
-    return prisma.userProfile.upsert({
-        where: { userId },
-        create: {
-            userId,
-            fullName: input.fullName,
-            email: input.email.trim().toLowerCase(),
-            location: input.location,
-            phone: input.phone,
-            linkedin: input.linkedin,
-            github: input.github,
-            portfolio: input.portfolio,
-            languages,
-            summary: input.summary,
-            telegramBotToken: input.telegramBotToken ? encrypt(input.telegramBotToken) : null,
-            // telegramChatId is managed by the connect flow (webhook), not profile saves.
-        },
-        update: {
-            fullName: input.fullName,
-            email: input.email.trim().toLowerCase(),
-            location: input.location,
-            phone: input.phone,
-            linkedin: input.linkedin,
-            github: input.github,
-            portfolio: input.portfolio,
-            languages,
-            summary: input.summary,
-            // Only touch the bot token when the caller actually sent the field,
-            // so unrelated profile saves never wipe it. Empty string clears it.
-            ...(input.telegramBotToken !== undefined
-                ? { telegramBotToken: input.telegramBotToken ? encrypt(input.telegramBotToken) : null }
-                : {}),
-            // telegramChatId intentionally omitted — never client-managed.
-        },
+    return prisma.$transaction(async tx => {
+        const profile = await tx.userProfile.upsert({
+            where: { userId },
+            create: {
+                userId,
+                fullName: input.fullName,
+                email: input.email.trim().toLowerCase(),
+                location: input.location,
+                phone: input.phone,
+                linkedin: input.linkedin,
+                github: input.github,
+                portfolio: input.portfolio,
+                languages,
+                summary: input.summary,
+                telegramBotToken: input.telegramBotToken ? encrypt(input.telegramBotToken) : null,
+                // telegramChatId is managed by the connect flow (webhook), not profile saves.
+            },
+            update: {
+                fullName: input.fullName,
+                email: input.email.trim().toLowerCase(),
+                location: input.location,
+                phone: input.phone,
+                linkedin: input.linkedin,
+                github: input.github,
+                portfolio: input.portfolio,
+                languages,
+                summary: input.summary,
+                // Only touch the bot token when the caller actually sent the field,
+                // so unrelated profile saves never wipe it. Empty string clears it.
+                ...(input.telegramBotToken !== undefined
+                    ? { telegramBotToken: input.telegramBotToken ? encrypt(input.telegramBotToken) : null }
+                    : {}),
+                // telegramChatId intentionally omitted — never client-managed.
+            },
+        });
+        await refreshCandidateFactsInTransaction(tx, userId);
+        return profile;
     });
 }
 
@@ -669,77 +698,142 @@ export async function upsertUserJobMatch(userId: string, jobId: string, input: {
 }
 
 export async function replaceUserTechnologies(userId: string, technologies: Array<{ name: string; category?: string; level?: string }>) {
-    await prisma.userTechnology.deleteMany({ where: { userId } });
-
-    if (!technologies.length) return [];
-
-    await prisma.userTechnology.createMany({
-        data: technologies.map((technology) => {
-            const catalogItem = TECHNOLOGY_CATALOG.find((item) => item.name.toLowerCase() === technology.name.trim().toLowerCase());
-            return {
-                userId,
-                name: catalogItem?.name ?? technology.name.trim(),
-                category: technology.category?.trim() || catalogItem?.category || "Other",
-                level: technology.level?.trim() || null,
-            };
-        }),
-        skipDuplicates: true,
-    });
-
-    return prisma.userTechnology.findMany({
-        where: { userId },
-        orderBy: [{ category: "asc" }, { name: "asc" }],
+    return prisma.$transaction(async tx => {
+        await tx.userTechnology.deleteMany({ where: { userId } });
+        if (technologies.length) {
+            await tx.userTechnology.createMany({
+                data: technologies.map((technology) => {
+                    const catalogItem = TECHNOLOGY_CATALOG.find((item) => item.name.toLowerCase() === technology.name.trim().toLowerCase());
+                    return {
+                        userId,
+                        name: catalogItem?.name ?? technology.name.trim(),
+                        category: technology.category?.trim() || catalogItem?.category || "Other",
+                        level: technology.level?.trim() || null,
+                    };
+                }),
+                skipDuplicates: true,
+            });
+        }
+        await refreshCandidateFactsInTransaction(tx, userId);
+        return tx.userTechnology.findMany({
+            where: { userId },
+            orderBy: [{ category: "asc" }, { name: "asc" }],
+        });
     });
 }
 
 export async function replaceUserExperiences(userId: string, experiences: ExperienceInput[]) {
-    await prisma.userExperience.deleteMany({ where: { userId } });
+    return prisma.$transaction(async tx => {
+        const requestedIds = experiences.flatMap((item) => item.id ? [item.id] : []);
+        if (new Set(requestedIds).size !== requestedIds.length) throw new Error("Duplicate experience IDs are not allowed.");
+        if (requestedIds.length) {
+            const owned = await tx.userExperience.count({ where: { userId, id: { in: requestedIds } } });
+            if (owned !== requestedIds.length) throw new Error("One or more experiences do not belong to this user.");
+        }
 
-    if (!experiences.length) return [];
-
-    await prisma.userExperience.createMany({
-        data: experiences.map((experience, index) => ({
-            userId,
-            company: experience.company,
-            title: experience.title,
-            location: experience.location,
-            startDate: experience.startDate,
-            endDate: experience.endDate,
-            project: experience.project,
-            description: experience.description,
-            bullets: cleanList(experience.bullets),
-            technologies: cleanList(experience.technologies),
-            sortOrder: experience.sortOrder ?? index,
-        })),
-    });
-
-    return prisma.userExperience.findMany({
-        where: { userId },
-        orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }],
+        const retainedIds: string[] = [];
+        for (const [index, experience] of experiences.entries()) {
+            const data = {
+                company: experience.company.trim(),
+                title: experience.title.trim(),
+                type: experience.type ?? "COMMERCIAL" as CandidateExperienceType,
+                location: experience.location?.trim() || null,
+                startDate: experience.startDate.trim(),
+                endDate: experience.endDate?.trim() || null,
+                project: experience.project?.trim() || null,
+                description: experience.description?.trim() || null,
+                bullets: cleanList(experience.bullets),
+                technologies: cleanList(experience.technologies),
+                sortOrder: experience.sortOrder ?? index,
+            };
+            const saved = experience.id
+                ? await tx.userExperience.update({ where: { id: experience.id }, data })
+                : await tx.userExperience.create({ data: { ...data, userId } });
+            retainedIds.push(saved.id);
+        }
+        await tx.userExperience.deleteMany({
+            where: { userId, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
+        });
+        await refreshCandidateFactsInTransaction(tx, userId);
+        return tx.userExperience.findMany({
+            where: { userId },
+            orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }],
+        });
     });
 }
 
 export async function replaceUserEducations(userId: string, educations: EducationInput[]) {
-    await prisma.userEducation.deleteMany({ where: { userId } });
+    return prisma.$transaction(async tx => {
+        const requestedIds = educations.flatMap((item) => item.id ? [item.id] : []);
+        if (new Set(requestedIds).size !== requestedIds.length) throw new Error("Duplicate education IDs are not allowed.");
+        if (requestedIds.length) {
+            const owned = await tx.userEducation.count({ where: { userId, id: { in: requestedIds } } });
+            if (owned !== requestedIds.length) throw new Error("One or more education records do not belong to this user.");
+        }
 
-    if (!educations.length) return [];
-
-    await prisma.userEducation.createMany({
-        data: educations.map((education, index) => ({
-            userId,
-            institution: education.institution,
-            program: education.program,
-            location: education.location,
-            startDate: education.startDate,
-            endDate: education.endDate,
-            details: cleanList(education.details),
-            sortOrder: education.sortOrder ?? index,
-        })),
+        const retainedIds: string[] = [];
+        for (const [index, education] of educations.entries()) {
+            const data = {
+                institution: education.institution.trim(),
+                program: education.program.trim(),
+                location: education.location?.trim() || null,
+                startDate: education.startDate?.trim() || null,
+                endDate: education.endDate?.trim() || null,
+                details: cleanList(education.details),
+                sortOrder: education.sortOrder ?? index,
+            };
+            const saved = education.id
+                ? await tx.userEducation.update({ where: { id: education.id }, data })
+                : await tx.userEducation.create({ data: { ...data, userId } });
+            retainedIds.push(saved.id);
+        }
+        await tx.userEducation.deleteMany({
+            where: { userId, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
+        });
+        await refreshCandidateFactsInTransaction(tx, userId);
+        return tx.userEducation.findMany({
+            where: { userId },
+            orderBy: [{ sortOrder: "asc" }, { endDate: "desc" }],
+        });
     });
+}
 
-    return prisma.userEducation.findMany({
-        where: { userId },
-        orderBy: [{ sortOrder: "asc" }, { endDate: "desc" }],
+export async function replaceUserProjects(userId: string, projects: ProjectInput[]) {
+    return prisma.$transaction(async tx => {
+        const requestedIds = projects.flatMap((item) => item.id ? [item.id] : []);
+        if (new Set(requestedIds).size !== requestedIds.length) throw new Error("Duplicate project IDs are not allowed.");
+        if (requestedIds.length) {
+            const owned = await tx.userProject.count({ where: { userId, id: { in: requestedIds } } });
+            if (owned !== requestedIds.length) throw new Error("One or more projects do not belong to this user.");
+        }
+
+        const retainedIds: string[] = [];
+        for (const [index, project] of projects.entries()) {
+            const data = {
+                type: project.type ?? "PERSONAL" as CandidateProjectType,
+                name: project.name.trim(),
+                role: project.role?.trim() || null,
+                url: project.url?.trim() || null,
+                startDate: project.startDate?.trim() || null,
+                endDate: project.endDate?.trim() || null,
+                description: project.description?.trim() || null,
+                bullets: cleanList(project.bullets),
+                technologies: cleanList(project.technologies),
+                sortOrder: project.sortOrder ?? index,
+            };
+            const saved = project.id
+                ? await tx.userProject.update({ where: { id: project.id }, data })
+                : await tx.userProject.create({ data: { ...data, userId } });
+            retainedIds.push(saved.id);
+        }
+        await tx.userProject.deleteMany({
+            where: { userId, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
+        });
+        await refreshCandidateFactsInTransaction(tx, userId);
+        return tx.userProject.findMany({
+            where: { userId },
+            orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }],
+        });
     });
 }
 

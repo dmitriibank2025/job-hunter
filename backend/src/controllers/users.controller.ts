@@ -8,6 +8,7 @@ import {
     listUserResumeBases,
     replaceUserEducations,
     replaceUserExperiences,
+    replaceUserProjects,
     replaceUserTechnologies,
     saveUploadedResume,
     updateUserDailyAutomationSettings,
@@ -23,6 +24,7 @@ import {
     userDailyAutomationSchema,
     userExperiencesSchema,
     userProfileSchema,
+    userProjectsSchema,
     userResumeBaseSchema,
     userTechnologySchema,
 } from "../validation";
@@ -95,6 +97,18 @@ export async function updateExperiences(req: Request, res: Response) {
     res.json({
         success: true,
         experiences,
+    });
+}
+
+export async function updateProjects(req: Request, res: Response) {
+    const userId = requiredParam(req, "id");
+    await requireUserAccess(req, userId);
+    const input = userProjectsSchema.parse(req.body ?? {});
+    const projects = await replaceUserProjects(userId, input.projects);
+
+    res.json({
+        success: true,
+        projects,
     });
 }
 

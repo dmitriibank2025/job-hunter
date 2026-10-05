@@ -11,6 +11,7 @@ export type PlanLimits = {
 
 export type WorkspaceUser = {
   id: string;
+  candidateRevision?: number;
   email: string;
   role?: "USER" | "ADMIN";
   plan: "FREE" | "PRO";
@@ -36,6 +37,7 @@ export type WorkspaceUser = {
   };
   technologies?: Array<{ name: string; category: string }>;
   experiences?: ExperienceEntry[];
+  projects?: ProjectEntry[];
   educations?: EducationEntry[];
   resumeBases?: ResumeBase[];
   linkedinAccounts?: Array<{
@@ -62,8 +64,10 @@ export type AuthTokens = {
 };
 
 export type ExperienceEntry = {
+  id?: string;
   company: string;
   title: string;
+  type?: "COMMERCIAL" | "FREELANCE" | "INTERNSHIP" | "VOLUNTEER";
   location?: string;
   dates: string;
   project?: string;
@@ -73,11 +77,25 @@ export type ExperienceEntry = {
 };
 
 export type EducationEntry = {
+  id?: string;
   institution: string;
   program: string;
   location?: string;
   dates?: string;
   details?: string;
+};
+
+export type ProjectEntry = {
+  id?: string;
+  type?: "PERSONAL" | "EDUCATIONAL" | "OPEN_SOURCE";
+  name: string;
+  role?: string;
+  url?: string;
+  startDate?: string;
+  endDate?: string;
+  description?: string;
+  bullets?: string[];
+  technologies?: string[];
 };
 
 export type ResumeBase = {
