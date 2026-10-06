@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import { z } from "zod";
+import type { CandidateContext } from "./candidate-context.service";
 
 export const stableId = (prefix: string, ...parts: string[]) =>
   `${prefix}_${createHash("sha256")
@@ -166,8 +167,89 @@ export type EvidenceCorpus = {
   contactLines: string[];
   entityIds: { commercial: string[]; personal: string[] };
   categories: string[];
-  candidatePolicy: "dmitrii-bank" | "base";
+  candidatePolicy: "dmitrii-bank" | "base" | "structured";
 };
+
+/** Build evidence directly from canonical user-owned facts, without reparsing a resume snapshot. */
+export function buildEvidenceCorpusFromCandidateContext(context: CandidateContext): EvidenceCorpus {
+  const evidence: VerifiedEvidence[] = [];
+  const headerByEntity = new Map(
+    context.facts
+      .filter((fact) => fact.kind === "HEADER")
+      .map((fact) => [fact.entityId, fact.text]),
+  );
+  const technologyCategories = new Map(
+    context.technologies.map((technology) => [technology.name.toLowerCase(), technology.category]),
+  );
+  const title = context.selectedBase.targetTitle && context.selectedBase.targetTitle !== "Uploaded Resume"
+    ? context.selectedBase.targetTitle
+    : context.experiences[0]?.title;
+  if (title) {
+    evidence.push({
+      id: stableId("ev", context.userId, context.selectedBase.id, "title", title),
+      text: title,
+      source: `resume-base:${context.selectedBase.id}`,
+      kind: "title",
+      context: "profile",
+    });
+  }
+
+  for (const fact of context.facts) {
+    if (!fact.verified || fact.kind === "CONTACT") continue;
+    const factContext: VerifiedEvidence["context"] = fact.entityType === "PROJECT"
+      ? "personal"
+      : fact.entityType === "EXPERIENCE"
+        ? "commercial"
+        : "profile";
+    const kind: VerifiedEvidence["kind"] = fact.kind === "SUMMARY"
+      ? "summary"
+      : fact.kind === "HEADER"
+        ? "header"
+        : fact.kind === "DESCRIPTION"
+          ? "description"
+          : fact.kind === "BULLET"
+            ? "bullet"
+            : fact.kind === "EDUCATION"
+              ? "education"
+              : fact.entityType === "TECHNOLOGY"
+                ? "skill"
+                : "technology";
+    evidence.push({
+      id: fact.id,
+      text: fact.text,
+      source: headerByEntity.get(fact.entityId) ?? `${fact.entityType.toLowerCase()}:${fact.entityId}`,
+      kind,
+      context: factContext,
+      ...(fact.entityType === "EXPERIENCE" || fact.entityType === "PROJECT" ? { entityId: fact.entityId } : {}),
+      ...(fact.entityType === "TECHNOLOGY"
+        ? { category: technologyCategories.get(fact.text.toLowerCase()) ?? "Other" }
+        : {}),
+    });
+  }
+
+  const profile = context.profile;
+  const contactLines = [
+    profile.fullName,
+    profile.location,
+    profile.phone ? `Phone: ${profile.phone}` : null,
+    profile.linkedin ? `LinkedIn: ${profile.linkedin}` : null,
+    profile.email ? `Email: ${profile.email}` : null,
+    profile.github ? `GitHub: ${profile.github}` : null,
+    profile.portfolio ? `Portfolio: ${profile.portfolio}` : null,
+    profile.languages.length ? `Languages: ${profile.languages.join(", ")}` : null,
+  ].filter((line): line is string => Boolean(line));
+
+  return {
+    evidence,
+    contactLines,
+    entityIds: {
+      commercial: context.experiences.map((experience) => experience.id),
+      personal: context.projects.map((project) => project.id),
+    },
+    categories: [...new Set(context.technologies.map((technology) => technology.category))],
+    candidatePolicy: "structured",
+  };
+}
 
 /** Source facts are parsed by code, never synthesized by a model. IDs survive reordering. */
 export function buildEvidenceCorpus(

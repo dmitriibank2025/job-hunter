@@ -102,8 +102,14 @@ export function buildCanonicalCandidateFacts(source: CandidateFactSource): Canon
     ]) {
       if (value) add({ entityType: "PROFILE", entityId: profile.id, kind: "CONTACT", text: value });
     }
-    if (profile.summary)
-      add({ entityType: "PROFILE", entityId: profile.id, kind: "SUMMARY", text: profile.summary });
+    if (profile.summary) {
+      const summaryFacts = profile.summary
+        .split(/(?<=[.!?])\s+(?=[A-Z])/u)
+        .map(clean)
+        .filter(Boolean);
+      for (const sentence of summaryFacts.length ? summaryFacts : [profile.summary])
+        add({ entityType: "PROFILE", entityId: profile.id, kind: "SUMMARY", text: sentence });
+    }
   }
 
   for (const technology of source.technologies) {

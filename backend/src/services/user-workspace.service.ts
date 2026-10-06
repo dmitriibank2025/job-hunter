@@ -20,6 +20,7 @@ import { BasicResumePdfTemplate, createBasicResumePdf } from "./resume-pdf.servi
 import { convertDocxToPdf, createStyledResumeDocx } from "./docx.service";
 import { invalidateMasterSkillsCache } from "./job-analyzer.service";
 import { HttpError } from "../errorHandler/http-error";
+import { getCandidateContext, type CandidateContext } from "./candidate-context.service";
 import { refreshCandidateFactsInTransaction } from "./candidate-facts.service";
 import {
     buildResumeBaseDefinition,
@@ -233,6 +234,7 @@ export type WorkspaceCandidateProfile = {
     languages?: string[];
     resume: string;
     resumeSourceFilePath?: string | null;
+    candidateContext: CandidateContext;
 };
 
 type ProfileInput = {
@@ -1356,40 +1358,20 @@ export async function getVacancyCollectionAllowance(userId: string) {
 }
 
 export async function getWorkspaceCandidateProfile(userId: string, resumeBaseId?: string): Promise<WorkspaceCandidateProfile> {
-    const user = await prisma.appUser.findUniqueOrThrow({
-        where: { id: userId },
-        include: {
-            profile: true,
-            resumeBases: {
-                where: resumeBaseId ? { id: resumeBaseId } : undefined,
-                orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-                take: 1,
-            },
-        },
-    });
-
-    if (!user.profile) {
-        throw new Error("Complete the user profile before analyzing jobs or generating resumes.");
-    }
-
-    const resume = user.resumeBases[0]?.content;
-    const resumeSourceFilePath = user.resumeBases[0]?.sourceFilePath;
-    if (!resume) {
-        throw new Error(resumeBaseId
-            ? "Selected base resume was not found for this user."
-            : "Create at least one base resume before analyzing jobs or generating resumes.");
-    }
+    const candidateContext = await getCandidateContext(userId, resumeBaseId);
+    const { profile, selectedBase } = candidateContext;
 
     return {
-        fullName: user.profile.fullName,
-        email: user.profile.email,
-        linkedin: user.profile.linkedin,
-        github: user.profile.github,
-        phone: user.profile.phone,
-        location: user.profile.location,
-        languages: user.profile.languages,
-        resume,
-        resumeSourceFilePath,
+        fullName: profile.fullName,
+        email: profile.email,
+        linkedin: profile.linkedin,
+        github: profile.github,
+        phone: profile.phone,
+        location: profile.location,
+        languages: profile.languages,
+        resume: selectedBase.content,
+        resumeSourceFilePath: selectedBase.sourceFilePath,
+        candidateContext,
     };
 }
 

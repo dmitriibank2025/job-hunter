@@ -79,6 +79,13 @@ describe("production final PASS gate", () => {
     (getWorkspaceCandidateProfile as jest.Mock).mockResolvedValue({
       fullName: "Dmitrii Bank",
       resume: "source",
+      candidateContext: {
+        userId: "user",
+        revision: 1,
+        facts: [],
+        profile: { fullName: "Dmitrii Bank" },
+        selectedBase: { id: "base", content: "source" },
+      },
     });
     (selectResumeBaseForJob as jest.Mock).mockResolvedValue({ id: "base" });
   });

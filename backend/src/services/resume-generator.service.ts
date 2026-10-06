@@ -26,7 +26,8 @@ import { prisma } from "../infrastructure/prisma";
 import { z } from "zod";
 import { runEvidencePipeline, scoreResumePresentation } from "./resume-pipeline.service";
 import { retrieveRelevantChunks } from "./embedding.service";
-import { buildEvidenceCorpus } from "./resume-evidence.service";
+import { buildEvidenceCorpus, buildEvidenceCorpusFromCandidateContext } from "./resume-evidence.service";
+import { hasStructuredCandidateEvidence, type CandidateContext } from "./candidate-context.service";
 
 const MODEL = process.env.RESUME_GENERATION_MODEL ?? "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS ?? 60_000);
@@ -1944,8 +1945,24 @@ async function finalizeResumeContent(
     };
 }
 
-export async function generateVerifiedResume(job: Job, userId: string, baseResume: string, fullName: string, maxRepairs = ATS_RESUME_REPAIR_ATTEMPTS) {
-    const result = await runEvidencePipeline({ vacancy: { title: job.title, description: job.description }, baseResume, fullName, maxRepairs }, {
+export async function generateVerifiedResume(
+    job: Job,
+    userId: string,
+    candidateContext: CandidateContext,
+    maxRepairs = ATS_RESUME_REPAIR_ATTEMPTS,
+) {
+    if (candidateContext.userId !== userId) throw new Error("Candidate context belongs to another user");
+    const structured = hasStructuredCandidateEvidence(candidateContext);
+    const result = await runEvidencePipeline({
+        vacancy: { title: job.title, description: job.description },
+        ...(structured
+            ? { candidateContext }
+            : {
+                baseResume: candidateContext.selectedBase.content,
+                fullName: candidateContext.profile.fullName,
+            }),
+        maxRepairs,
+    }, {
         complete: async (system, input, schema, stage) => JSON.parse(await callOpenAIForText(
             JSON.stringify({ input }),
             `resume_pipeline_${stage}`, job.id, userId, system, true, z.toJSONSchema(schema, { reused: "ref" }),
@@ -1962,7 +1979,14 @@ export async function generateVerifiedResume(job: Job, userId: string, baseResum
         atsMatchedKeywords: result.analysis.requirements.filter(r => !missing.has(r.id)).map(r => r.term),
         atsMissingKeywords: result.analysis.requirements.filter(r => missing.has(r.id)).map(r => r.term),
         atsValidatedAt: new Date(),
-        evidenceTrace: { version: 1, ...result, presentation },
+        evidenceTrace: {
+            version: 2,
+            candidateRevision: candidateContext.revision,
+            candidateResumeBaseId: candidateContext.selectedBase.id,
+            candidateSource: structured ? "STRUCTURED_CONTEXT" : "LEGACY_SNAPSHOT_ADAPTER",
+            ...result,
+            presentation,
+        },
     };
 }
 
@@ -2000,7 +2024,7 @@ export async function generateResumeForJob(
     const profile = await getWorkspaceCandidateProfile(options.userId, selectedResumeBaseId);
     if (!profile) throw new Error("Candidate profile not found for this user");
 
-    const finalized = await generateVerifiedResume(job, options.userId, profile.resume, profile.fullName);
+    const finalized = await generateVerifiedResume(job, options.userId, profile.candidateContext);
     const content = finalized.content;
 
     const folderName = slugify(`${job.company ?? "unknown"}-${job.title}`);
@@ -2103,7 +2127,7 @@ export async function regenerateResumeVersion(
     const profile = await getWorkspaceCandidateProfile(existing.userId, selectedBaseId);
     if (!profile) throw new Error("Candidate profile not found for this user");
 
-    const finalized = await generateVerifiedResume(existing.job, existing.userId, profile.resume, profile.fullName);
+    const finalized = await generateVerifiedResume(existing.job, existing.userId, profile.candidateContext);
     const content = finalized.content;
 
     const folderName = slugify(`${existing.job.company ?? "unknown"}-${existing.job.title}`);
@@ -2182,7 +2206,9 @@ export async function generateCoverLetterForJob(
     const profile = await getWorkspaceCandidateProfile(options.userId, selectedResumeBaseId);
     if (!profile) throw new Error("Candidate profile not found for this user");
 
-    const coverEvidence = buildEvidenceCorpus(profile.resume, profile.fullName);
+    const coverEvidence = hasStructuredCandidateEvidence(profile.candidateContext)
+        ? buildEvidenceCorpusFromCandidateContext(profile.candidateContext)
+        : buildEvidenceCorpus(profile.resume, profile.fullName);
     const verifiedCoverSource = [
         ...coverEvidence.contactLines,
         ...coverEvidence.evidence.map(e => `[${e.context}/${e.kind}${e.entityId ? `; ${e.source}` : ""}] ${e.text}`),

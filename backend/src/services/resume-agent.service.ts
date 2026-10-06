@@ -31,8 +31,7 @@ export async function runResumeAgent(
   const result = await generateVerifiedResume(
     job,
     userId,
-    profile.resume,
-    profile.fullName,
+    profile.candidateContext,
     opts.maxRounds === undefined ? undefined : Math.max(0, opts.maxRounds - 1),
   );
   return {
