@@ -1,4 +1,6 @@
-import { normalizeJobUrl, inferExternalJobId } from "../services/job-deduplication.service";
+import { Job } from "@prisma/client";
+import { prisma } from "../infrastructure/prisma";
+import { createJobIfNew, normalizeJobUrl, inferExternalJobId } from "../services/job-deduplication.service";
 
 describe("normalizeJobUrl", () => {
     it("removes trailing slash", () => {
@@ -64,5 +66,57 @@ describe("inferExternalJobId", () => {
     it("returns null for null input", () => {
         expect(inferExternalJobId(null)).toBeNull();
         expect(inferExternalJobId(undefined)).toBeNull();
+    });
+});
+
+describe("duplicate enrichment", () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    it("backfills verified ingestion fields without replacing a longer saved description", async () => {
+        const existing = {
+            id: "saved-job",
+            title: "Backend Engineer",
+            company: null,
+            location: null,
+            url: "https://example.com/job/123456",
+            normalizedUrl: null,
+            fingerprint: null,
+            externalJobId: null,
+            postedAt: null,
+            applyUrl: null,
+            employmentType: null,
+            description: "Existing verified description ".repeat(30),
+            ingestionQualityScore: null,
+            ingestionQualityState: null,
+            ingestionMetadata: null,
+            source: "DEVJOBS",
+        } as unknown as Job;
+        jest.spyOn(prisma.job, "findFirst").mockResolvedValue(existing);
+        jest.spyOn(prisma.resumeVersion, "count").mockResolvedValue(0);
+        const update = jest.spyOn(prisma.job, "update").mockResolvedValue({ ...existing, company: "Example Labs" });
+
+        const result = await createJobIfNew({
+            title: "Backend Engineer",
+            company: "Example Labs",
+            location: "Tel Aviv, Israel",
+            url: existing.url!,
+            description: "Short new description",
+            source: "DEVJOBS",
+            applyUrl: "https://example.com/apply/123456",
+            employmentType: "FULL_TIME",
+            ingestion: { qualityScore: 85, qualityState: "HIGH_CONFIDENCE", extractionMethod: "json_ld" },
+        });
+
+        expect(result.isNew).toBe(false);
+        expect(update).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({
+                company: "Example Labs",
+                location: "Tel Aviv, Israel",
+                applyUrl: "https://example.com/apply/123456",
+                employmentType: "FULL_TIME",
+                ingestionQualityScore: 85,
+            }),
+        }));
+        expect(update.mock.calls[0][0].data).not.toHaveProperty("description");
     });
 });

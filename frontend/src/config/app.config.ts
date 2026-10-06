@@ -6,9 +6,10 @@ export const API_BASE_URL = !configuredApiBaseUrl || configuredApiBaseUrl.includ
   : configuredApiBaseUrl;
 
 export const defaults = {
-  targetRoles: "Frontend Developer, Backend Developer, Full Stack Developer",
+  targetRoles: "Full Stack Engineer, Backend Engineer, Software Engineer, AI Engineer, AI Software Engineer, Applied AI Engineer, LLM Engineer",
   targetLocations: "Israel, Tel Aviv, Ramat Gan, Remote Europe",
-  requiredTech: "React, TypeScript, Node.js, Express, PostgreSQL, Redis, AWS",
+  searchProviders: "LINKEDIN, GREENHOUSE, LEVER, ASHBY, COMEET, WORKABLE, DEVJOBS, ALLJOBS, DRUSHIM, JOBMASTER, GOTFRIENDS, SQLINK, ETHOSIA, NISHA, JOBIFY, EMPLOYBL",
+  requiredTech: "Node.js, TypeScript, JavaScript, React, Next.js, NestJS, Express, Python, AWS, PostgreSQL, MongoDB, Redis, Docker, Kubernetes, microservices, distributed systems, event-driven architecture, Kafka, RabbitMQ, SQS, LLM, RAG, AI Agents, MCP",
   excludedKeywords: "PHP, WordPress, unpaid internship, C#, .NET",
   minMatchScore: "70",
   dateRangeDays: "7",

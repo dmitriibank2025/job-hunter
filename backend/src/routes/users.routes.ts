@@ -1,14 +1,19 @@
 import { Router } from "express";
 import {
+    addCompanyToBlacklist,
     createResumeBase,
+    deleteCompanyFromBlacklist,
     deleteResumeBase,
+    getCompanyBlacklist,
     getUser,
     listResumeBases,
-    updateEducations,
     updateDailyAutomation,
+    updateEducations,
     updateExperiences,
     updateProfile,
+    updateProjects,
     updateResumeBase,
+    updateSearchSettings,
     updateTechnologies,
     uploadResumeFile,
 } from "../controllers/users.controller";
@@ -21,8 +26,13 @@ export function createUsersRouter() {
     router.post("/:id/resume-file", uploadResumeFile);
     router.put("/:id/technologies", updateTechnologies);
     router.put("/:id/experiences", updateExperiences);
+    router.put("/:id/projects", updateProjects);
     router.put("/:id/educations", updateEducations);
     router.put("/:id/daily-automation", updateDailyAutomation);
+    router.put("/:id/search-settings", updateSearchSettings);
+    router.get("/:id/blacklist", getCompanyBlacklist);
+    router.post("/:id/blacklist", addCompanyToBlacklist);
+    router.delete("/:id/blacklist/:companyId", deleteCompanyFromBlacklist);
     router.post("/:id/resume-bases", createResumeBase);
     router.get("/:id/resume-bases", listResumeBases);
     router.put("/:id/resume-bases/:resumeBaseId", updateResumeBase);

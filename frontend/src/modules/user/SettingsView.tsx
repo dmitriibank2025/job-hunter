@@ -43,6 +43,7 @@ type SettingsViewProps = {
   onRepairUserMatches: () => void;
   onRunDailyReport: () => void;
   onSaveDailyAutomation: (settings: { enabled: boolean; time: string; timezone: string }) => void;
+  onSaveExcludeRemote: (excludeRemote: boolean) => void;
 };
 
 function formatDate(value?: string) {
@@ -68,6 +69,7 @@ export function SettingsView({
   onRepairUserMatches,
   onRunDailyReport,
   onSaveDailyAutomation,
+  onSaveExcludeRemote,
 }: SettingsViewProps) {
   const isPending = linkedinStatus.connectionStatus === "PENDING";
   const isConnected = linkedinStatus.connected;
@@ -230,6 +232,29 @@ export function SettingsView({
 
           <div className="button-row">
             <button className="btn btn-primary" type="button" onClick={() => onSaveDailyAutomation(dailyAutomation)}>Save Schedule</button>
+          </div>
+        </div>
+      </section>
+
+      <section className="surface">
+        <SectionHead title="Job Search Filters" subtitle="Skip junk vacancies in both the daily automation and manual searches." />
+
+        <div className="automation-settings">
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={Boolean(user?.searchExcludeRemote)}
+              onChange={(event) => onSaveExcludeRemote(event.target.checked)}
+            />
+            <span>
+              <strong>Exclude remote vacancies</strong>
+              <small>Drop vacancies marked as remote before analysis and resume generation.</small>
+            </span>
+          </label>
+
+          <div className="search-explainer">
+            <strong>Company blacklist</strong>
+            <span>Block companies whose vacancies you no longer want on the <b>Companies</b> page — you can see active vs blocked companies there and unblock them anytime.</span>
           </div>
         </div>
       </section>

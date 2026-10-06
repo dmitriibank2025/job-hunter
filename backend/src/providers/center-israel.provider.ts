@@ -1,5 +1,6 @@
 import { JobProvider } from "./job-provider";
 import { ParsedJob } from "./types";
+import type { BrowserContext, Page } from "playwright";
 import {
     cleanJobTitle,
     createProviderBrowser,
@@ -8,7 +9,7 @@ import {
     getSearchLocation,
     isLikelyJobUrl,
     isRelevantJobText,
-    newProviderPage,
+    newProviderContext,
     shouldFetchProviderDetails,
 } from "./browser-provider-utils";
 import { updateAutomationProgress } from "../services/job-automation-progress.service";
@@ -16,6 +17,7 @@ import {
     getPrioritizedCompanyTargets,
     recordCompanyScanResult,
 } from "../services/company-priority.service";
+import { detectAtsConfiguration, recordAtsDiscovery } from "../services/ats-discovery.service";
 
 export type CompanyTarget = {
     name: string;
@@ -43,6 +45,36 @@ function positiveNumber(value: string | undefined, fallback: number): number {
 function nonNegativeNumber(value: string | undefined, fallback: number): number {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+export function centerIsraelProviderTimeoutMs(): number {
+    return positiveNumber(process.env.CENTER_ISRAEL_PROVIDER_TIMEOUT_MS, 1_800_000);
+}
+
+export function centerIsraelBrowserTimeoutMs(): number {
+    return positiveNumber(
+        process.env.CENTER_ISRAEL_BROWSER_TIMEOUT_MS,
+        centerIsraelProviderTimeoutMs() + 60_000,
+    );
+}
+
+function conciseBrowserError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    const firstLine = message.split("\n", 1)[0]?.trim() || "Unknown browser error";
+
+    if (/target page, context or browser has been closed|browser has been closed|context closed/i.test(firstLine)) {
+        return "Browser context closed before the scan completed.";
+    }
+
+    return firstLine.slice(0, 500);
+}
+
+async function newCenterProviderPage(context: BrowserContext): Promise<Page> {
+    const page = await context.newPage();
+    const timeoutMs = positiveNumber(process.env.PROVIDER_PAGE_TIMEOUT_MS, 20_000);
+    page.setDefaultTimeout(timeoutMs);
+    page.setDefaultNavigationTimeout(timeoutMs);
+    return page;
 }
 
 const STACK_FIT_COMPANIES = new Set([
@@ -512,7 +544,7 @@ function isLikelyCareerJobCard(card: JobCard): boolean {
 }
 
 async function extractCardsFromPage(
-    page: Awaited<ReturnType<typeof newProviderPage>>,
+    page: Page,
     company: CompanyTarget,
 ): Promise<JobCard[]> {
     const cards = await page.evaluate(new Function("companyLocationHint", `
@@ -599,15 +631,15 @@ function normalizePageTitle(value?: string | null): string {
 }
 
 async function inspectJobPage(
-    browser: Awaited<ReturnType<typeof createProviderBrowser>>,
+    context: BrowserContext,
     company: CompanyTarget,
     card: JobCard,
 ): Promise<ParsedJob | null> {
-    let page: Awaited<ReturnType<typeof newProviderPage>> | undefined;
+    let page: Page | undefined;
     const jobTimeoutMs = Number(process.env.CENTER_ISRAEL_JOB_TIMEOUT_MS ?? 12000);
 
     try {
-        page = await newProviderPage(browser);
+        page = await newCenterProviderPage(context);
         const jobData = await Promise.race([
             (async () => {
                 await page.goto(card.url, {
@@ -684,7 +716,10 @@ async function inspectJobPage(
 
         return jobData;
     } catch (error) {
-        console.warn(`[Center Israel] Failed to inspect job page for ${company.name}: ${(error as Error).message}`);
+        const message = conciseBrowserError(error);
+        if (!message.startsWith("Browser context closed")) {
+            console.warn(`[Center Israel] Failed to inspect job page for ${company.name}: ${message}`);
+        }
         return null;
     } finally {
         await page?.close().catch(() => undefined);
@@ -717,19 +752,34 @@ function isLikelySingleJobPage(url: string, title: string, text: string): boolea
 }
 
 async function inspectCareerPage(
-    browser: Awaited<ReturnType<typeof createProviderBrowser>>,
+    context: BrowserContext,
     company: CompanyTarget,
     url: string,
 ): Promise<CareerPageResult> {
-    let page: Awaited<ReturnType<typeof newProviderPage>> | undefined;
+    let page: Page | undefined;
     try {
-        page = await newProviderPage(browser);
+        page = await newCenterProviderPage(context);
         await page.goto(url, {
             waitUntil: "domcontentloaded",
             timeout: 30000,
         });
 
         await page.waitForTimeout(1200);
+
+        const pageHtml = await page.content();
+        const ats = detectAtsConfiguration(`${page.url()}\n${pageHtml}`);
+        if (ats.ats !== "custom" && ats.accountSlug) {
+            await recordAtsDiscovery({
+                careerUrl: company.careerUrl ?? url,
+                companyName: company.name,
+                result: ats,
+                finalUrl: page.url(),
+            }).catch((error) => {
+                console.warn(`[Center Israel] Could not store ATS discovery for ${company.name}: ${conciseBrowserError(error)}`);
+            });
+            console.log(`[Center Israel] Discovered ${ats.ats} board "${ats.accountSlug}" for ${company.name}; delegated to ATS provider.`);
+            return { jobs: [] };
+        }
 
         const cards = await extractCardsFromPage(page, company);
         const cardJobs = filterRelevantJobs(cards.map((card) => jobFromCard(company, card)));
@@ -746,7 +796,7 @@ async function inspectCareerPage(
         for (const card of cards.slice(0, maxDetailPages)) {
             if (!isLikelyJobUrl(card.url)) continue;
 
-            const job = await inspectJobPage(browser, company, card);
+            const job = await inspectJobPage(context, company, card);
             if (job) jobs.push(job);
         }
 
@@ -775,8 +825,10 @@ async function inspectCareerPage(
             }],
         };
     } catch (error) {
-        const message = (error as Error).message || "Unknown career page error";
-        console.warn(`[Center Israel] Failed to scan ${company.name} (${url}): ${message}`);
+        const message = conciseBrowserError(error);
+        if (!message.startsWith("Browser context closed")) {
+            console.warn(`[Center Israel] Failed to scan ${company.name} (${url}): ${message}`);
+        }
         return { jobs: [], error: message };
     } finally {
         await page?.close().catch(() => undefined);
@@ -788,17 +840,34 @@ async function inspectCareerPageWithTimeout(
     company: CompanyTarget & { careerUrl: string },
 ): Promise<CareerPageResult> {
     const timeoutMs = positiveNumber(process.env.CENTER_ISRAEL_COMPANY_TIMEOUT_MS, 45000);
+    const context = await newProviderContext(browser);
+    const inspection = inspectCareerPage(context, company, company.careerUrl);
+    let timedOut = false;
+    let timer: NodeJS.Timeout | undefined;
 
-    return Promise.race([
-        inspectCareerPage(browser, company, company.careerUrl),
-        new Promise<CareerPageResult>((resolve) => {
-            const timer = setTimeout(
-                () => resolve({ jobs: [], error: `Company scan timed out after ${timeoutMs}ms` }),
-                timeoutMs,
-            );
-            timer.unref?.();
-        }),
-    ]);
+    try {
+        const result = await Promise.race([
+            inspection,
+            new Promise<CareerPageResult>((resolve) => {
+                timer = setTimeout(() => {
+                    timedOut = true;
+                    void context.close().catch(() => undefined).finally(() => {
+                        resolve({ jobs: [], error: `Company scan timed out after ${timeoutMs}ms` });
+                    });
+                }, timeoutMs);
+                timer.unref?.();
+            }),
+        ]);
+
+        if (timedOut) {
+            await inspection.catch(() => undefined);
+        }
+
+        return result;
+    } finally {
+        if (timer) clearTimeout(timer);
+        await context.close().catch(() => undefined);
+    }
 }
 
 export class CenterIsraelCompaniesProvider implements JobProvider {
@@ -811,7 +880,7 @@ export class CenterIsraelCompaniesProvider implements JobProvider {
 
     async search(): Promise<ParsedJob[]> {
         const browser = await createProviderBrowser({
-            timeoutMs: Number(process.env.CENTER_ISRAEL_BROWSER_TIMEOUT_MS ?? 900000),
+            timeoutMs: centerIsraelBrowserTimeoutMs(),
         });
         const jobs: ParsedJob[] = [];
         const targets = await getPrioritizedCenterIsraelCompanyTargets();

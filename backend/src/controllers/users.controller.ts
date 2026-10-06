@@ -8,6 +8,7 @@ import {
     listUserResumeBases,
     replaceUserEducations,
     replaceUserExperiences,
+    replaceUserProjects,
     replaceUserTechnologies,
     saveUploadedResume,
     updateUserDailyAutomationSettings,
@@ -15,15 +16,24 @@ import {
     upsertUserProfile,
 } from "../services/user-workspace.service";
 import {
+    companyBlacklistSchema,
+    searchSettingsSchema,
     updateUserResumeBaseSchema,
     uploadedResumeFileSchema,
     userEducationsSchema,
     userDailyAutomationSchema,
     userExperiencesSchema,
     userProfileSchema,
+    userProjectsSchema,
     userResumeBaseSchema,
     userTechnologySchema,
 } from "../validation";
+import {
+    addUserBlacklistedCompany,
+    listUserBlacklistedCompanies,
+    removeUserBlacklistedCompany,
+    updateUserSearchSettings,
+} from "../services/company-blacklist.service";
 
 export async function getUser(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
@@ -40,7 +50,8 @@ export async function updateProfile(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
     await requireUserAccess(req, userId);
     const input = userProfileSchema.parse(req.body ?? {});
-    const saved = await upsertUserProfile(userId, input);
+    const result = await upsertUserProfile(userId, input);
+    const saved = result.value;
 
     // Never return secrets/raw chat binding to the client.
     const { telegramBotToken, telegramChatId, ...safeProfile } = saved;
@@ -51,6 +62,8 @@ export async function updateProfile(req: Request, res: Response) {
             telegramHasBotToken: Boolean(telegramBotToken),
             telegramConnected: Boolean(telegramChatId),
         },
+        candidateRevision: result.candidateRevision,
+        resumeBases: result.resumeBases,
     });
 }
 
@@ -70,11 +83,13 @@ export async function updateTechnologies(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
     await requireUserAccess(req, userId);
     const input = userTechnologySchema.parse(req.body ?? {});
-    const technologies = await replaceUserTechnologies(userId, input.technologies);
+    const result = await replaceUserTechnologies(userId, input.technologies, input.expectedRevision);
 
     res.json({
         success: true,
-        technologies,
+        technologies: result.value,
+        candidateRevision: result.candidateRevision,
+        resumeBases: result.resumeBases,
     });
 }
 
@@ -82,11 +97,27 @@ export async function updateExperiences(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
     await requireUserAccess(req, userId);
     const input = userExperiencesSchema.parse(req.body ?? {});
-    const experiences = await replaceUserExperiences(userId, input.experiences);
+    const result = await replaceUserExperiences(userId, input.experiences, input.expectedRevision);
 
     res.json({
         success: true,
-        experiences,
+        experiences: result.value,
+        candidateRevision: result.candidateRevision,
+        resumeBases: result.resumeBases,
+    });
+}
+
+export async function updateProjects(req: Request, res: Response) {
+    const userId = requiredParam(req, "id");
+    await requireUserAccess(req, userId);
+    const input = userProjectsSchema.parse(req.body ?? {});
+    const result = await replaceUserProjects(userId, input.projects, input.expectedRevision);
+
+    res.json({
+        success: true,
+        projects: result.value,
+        candidateRevision: result.candidateRevision,
+        resumeBases: result.resumeBases,
     });
 }
 
@@ -94,11 +125,13 @@ export async function updateEducations(req: Request, res: Response) {
     const userId = requiredParam(req, "id");
     await requireUserAccess(req, userId);
     const input = userEducationsSchema.parse(req.body ?? {});
-    const educations = await replaceUserEducations(userId, input.educations);
+    const result = await replaceUserEducations(userId, input.educations, input.expectedRevision);
 
     res.json({
         success: true,
-        educations,
+        educations: result.value,
+        candidateRevision: result.candidateRevision,
+        resumeBases: result.resumeBases,
     });
 }
 
@@ -121,6 +154,41 @@ export async function updateDailyAutomation(req: Request, res: Response) {
             },
         },
     });
+}
+
+export async function getCompanyBlacklist(req: Request, res: Response) {
+    const userId = requiredParam(req, "id");
+    await requireUserAccess(req, userId);
+    const companies = await listUserBlacklistedCompanies(userId);
+
+    res.json({ success: true, companies });
+}
+
+export async function addCompanyToBlacklist(req: Request, res: Response) {
+    const userId = requiredParam(req, "id");
+    await requireUserAccess(req, userId);
+    const input = companyBlacklistSchema.parse(req.body ?? {});
+    const company = await addUserBlacklistedCompany(userId, input.name);
+
+    res.status(201).json({ success: true, company });
+}
+
+export async function deleteCompanyFromBlacklist(req: Request, res: Response) {
+    const userId = requiredParam(req, "id");
+    await requireUserAccess(req, userId);
+    const companyId = requiredParam(req, "companyId");
+    await removeUserBlacklistedCompany(userId, companyId);
+
+    res.json({ success: true });
+}
+
+export async function updateSearchSettings(req: Request, res: Response) {
+    const userId = requiredParam(req, "id");
+    await requireUserAccess(req, userId);
+    const input = searchSettingsSchema.parse(req.body ?? {});
+    const user = await updateUserSearchSettings(userId, input);
+
+    res.json({ success: true, searchExcludeRemote: user.searchExcludeRemote });
 }
 
 export async function createResumeBase(req: Request, res: Response) {

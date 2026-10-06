@@ -3,6 +3,28 @@
 Job Hunter is a split frontend/backend application for collecting software engineering vacancies, analyzing fit, generating tailored resumes and cover letters, and tracking company priority.
 It now supports user workspaces with profile data, technology catalog selection, base resumes per target direction, subscription limits, and admin usage reporting.
 
+## October 2026 Reliability Update
+
+The latest two-day release turns the vacancy-to-document workflow into a verified,
+observable pipeline rather than a single free-form generation step.
+
+- Resume generation now follows `Job Analyzer -> RAG Query Planner -> pgvector/HNSW retrieval -> Evidence Mapper -> Resume Generator -> deterministic validation -> LLM Critic -> bounded Repair -> deterministic revalidation`. DOCX/PDF rendering starts only after the final factual PASS.
+- Stable requirement IDs and claim-level `evidenceIds`, `requirementIds`, `keywords`, and support status make every candidate claim traceable. Unsupported claims, fabricated employer projects, changed employment dates, fake education, and personal-to-commercial experience promotion are hard failures; document quality score remains separate from factual validity.
+- Canonical user-owned profile, skills, experience, projects, and education are the source of truth for linked resumes. Uploaded resumes remain immutable snapshots until explicitly detached; workspace edits rebuild linked bases and advance an optimistic `candidateRevision`.
+- Canonical facts have stable IDs and are indexed per user and revision. Every pgvector chunk records its `candidateFactId`, entity, content hash, and revision; retrieval accepts only active chunks for the user's current revision. A transactional queue retries failed embedding jobs without making stale chunks current.
+- Resume prompts and validation are candidate-neutral: names, employers, dates, experience length, education, and AI capabilities come from the current user's verified data rather than hardcoded policy.
+- The Word renderer uses the new base-resume header format: name, target title/stack, and contact/location rows are separated correctly. The city can no longer leak into the name field, and the stack is retained.
+- Vacancy ingestion now covers LinkedIn, official company career pages, Greenhouse, Lever, Ashby, Comeet, Workable, DevJobs, AllJobs, Drushim, JobMaster, GotFriends, SQLink, Ethosia, Nisha, Jobify, Employbl, and Glassdoor. Search Preferences lets each user select the active sources.
+- Collection is detail-first: pages are classified before parsing, official ATS APIs and `JobPosting` JSON-LD take precedence, source-specific DOM extraction is the fallback, and missing optional fields remain unknown instead of being invented.
+- Each job receives field confidence, quality state, Israel/remote eligibility, extraction provenance, deduplication identity, and check-by-check filter decisions. Explicit foreign locations override incidental Israel mentions, and title-first role matching prevents unrelated roles from passing on description keywords alone.
+- Existing duplicate records are safely enriched with newly verified fields without replacing a longer saved description. Four legacy Nisha/Employbl category pages were quarantined as rejected while preserving their user analyses.
+- PostgreSQL now stores ingestion quality metadata and discovered ATS configurations. Docker migrations, backend/frontend images, health checks, and the source-audit command were verified on the running stack.
+
+Detailed design and operational notes:
+
+- [Evidence-based resume pipeline](RESUME_PIPELINE.md)
+- [Job ingestion architecture and live source audit](JOB_INGESTION.md)
+
 ## Stack
 
 - Node.js, TypeScript, Express
@@ -103,6 +125,52 @@ Set these in the deploy platform:
 - `JOB_REPORT_CRON`
 - `JOB_REPORT_TIMEZONE`
 - `ACTIVE_PROVIDERS`
+- `CANDIDATE_INDEX_WORKER_ENABLED` (optional; defaults to enabled)
+
+Rebuild the current revision's RAG index from canonical facts after a migration
+or import with `pnpm --dir backend run backfill:candidate-index`. Add
+`--email=user@example.com` to limit the operation to one workspace.
+
+Supported vacancy sources:
+
+- primary: `LINKEDIN`;
+- official company pages: `CENTER_ISRAEL`;
+- official ATS feeds: `GREENHOUSE`, `LEVER`, `ASHBY`, `COMEET`, `WORKABLE`;
+- Israeli boards/recruiters: `DEVJOBS`, `ALLJOBS`, `DRUSHIM`, `JOBMASTER`, `GOTFRIENDS`, `SQLINK`, `ETHOSIA`, `NISHA`;
+- supplementary aggregators: `JOBIFY`, `EMPLOYBL`, `GLASSDOOR`.
+
+Official ATS feeds are company scoped. Configure `GREENHOUSE_BOARD_TOKENS`,
+`LEVER_SITES`, `ASHBY_JOB_BOARDS`, and `WORKABLE_ACCOUNTS` with entries in the
+form `Company name|board-slug`, separated by semicolons or new lines. Lever may
+use `Company name|board-slug|eu`. Comeet uses
+`Company name|company-uid|public-careers-token`. Missing ATS configuration is
+treated as a clean skip. Browser-board entry points can be overridden through
+the corresponding `*_SEARCH_URLS` variables shown in `.env.example`.
+
+The example configuration includes the currently active `Nuvei|nuvei`
+Workable board. The collector supports both Workable's current top-level
+`city`/`state`/`country` and `published_on` fields and its older nested
+`location` response shape.
+
+Put these values in the repository-root `.env` file (not in the frontend):
+
+```env
+LEVER_SITES=Company A|company-a;Company B|company-b|eu
+ASHBY_JOB_BOARDS=Company A|company-a
+WORKABLE_ACCOUNTS=Company A|company-a
+COMEET_ACCOUNTS=Company A|company-uid|public-careers-token
+```
+
+The Search Sources controls in the UI only enable or disable configured
+providers for a run. They do not manage ATS accounts. Restart the backend after
+changing `.env` (`docker compose up -d backend`). Company-career-page discovery
+can add high-confidence Greenhouse, Lever, Ashby, and Workable boards to the
+database automatically; Comeet still needs its public careers token explicitly.
+
+Ethosia currently redirects public job search to an authenticated Bright.source
+session, so its adapter remains disabled until `ETHOSIA_SEARCH_URLS` points to an
+authorized search entry point; the marketing homepage is intentionally not
+treated as a vacancy feed.
 
 Frontend:
 
@@ -130,5 +198,6 @@ Do not commit:
 - browser cookies/auth state
 - `.idea/`
 - `dist/`
+- `work/` local smoke-test and rendered QA artifacts
 
 These are ignored by `.gitignore`.

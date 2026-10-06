@@ -3,6 +3,7 @@ import { requireEncryptionKeyInProduction } from "./infrastructure/field-encrypt
 import { validateEnv } from "./config/env";
 import { prisma } from "./infrastructure/prisma";
 import { startDailyJobReportSchedule, stopDailyJobReportSchedule } from "./services/job-report-scheduler.service";
+import { startCandidateIndexSchedule, stopCandidateIndexSchedule } from "./services/candidate-index.service";
 
 validateEnv();
 requireEncryptionKeyInProduction();
@@ -17,6 +18,7 @@ async function shutdown(signal: string) {
     console.log(`Received ${signal}, shutting down...`);
 
     stopDailyJobReportSchedule();
+    stopCandidateIndexSchedule();
 
     await new Promise<void>((resolve) => {
         if (!server) {
@@ -49,4 +51,5 @@ const port = process.env.PORT || 4000;
 server = app.listen(port, () => {
     console.log(`Job Hunter API running on port ${port}`);
     startDailyJobReportSchedule();
+    startCandidateIndexSchedule();
 });

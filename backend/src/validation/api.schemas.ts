@@ -1,5 +1,19 @@
 import { z } from "zod";
 import { LANGUAGE_OPTIONS } from "../services/user-workspace.service";
+import { JOB_SEARCH_PROVIDER_NAMES } from "../providers/types";
+
+const blankToUndefined = (value: unknown) =>
+    typeof value === "string" && value.trim() === "" ? undefined : value;
+
+const optionalTrimmedString = (minimum = 1) => z.preprocess(
+    blankToUndefined,
+    z.string().trim().min(minimum).optional(),
+);
+
+const optionalUrl = z.preprocess(
+    blankToUndefined,
+    z.string().trim().url().optional(),
+);
 
 export const createJobSchema = z.object({
     title: z.string().min(2),
@@ -13,12 +27,12 @@ export const createJobSchema = z.object({
 });
 
 export const manualVacancySchema = z.object({
-    title: z.string().trim().min(2).optional(),
-    externalJobId: z.string().trim().min(1).optional(),
-    company: z.string().trim().min(1).optional(),
-    location: z.string().trim().min(1).optional(),
-    url: z.string().trim().url().optional(),
-    description: z.string().trim().optional(),
+    title: optionalTrimmedString(2),
+    externalJobId: optionalTrimmedString(),
+    company: optionalTrimmedString(),
+    location: optionalTrimmedString(),
+    url: optionalUrl,
+    description: optionalTrimmedString(),
     userId: z.string().trim().uuid().optional(),
     resumeBaseId: z.string().trim().uuid().optional(),
     resumeBaseIds: z.object({
@@ -51,12 +65,15 @@ export const automationRunSchema = z.object({
     }).optional(),
     searchLocation: z.string().min(2).optional(),
     sourceMode: z.enum(["EMAIL", "PROVIDERS", "CENTER_ISRAEL"]).optional(),
+    providerNames: z.array(z.enum(JOB_SEARCH_PROVIDER_NAMES)).min(1).optional(),
     preferences: z.object({
         targetRoles: z.array(z.string()).optional(),
         targetLocations: z.array(z.string()).optional(),
         requiredTech: z.array(z.string()).optional(),
         excludedKeywords: z.array(z.string()).optional(),
         excludedTitleKeywords: z.array(z.string()).optional(),
+        excludedCompanies: z.array(z.string()).optional(),
+        excludeRemote: z.boolean().optional(),
         dateRangeDays: z.coerce.number().int().positive().optional(),
         gmailScanDays: z.coerce.number().int().positive().optional(),
         minMatchScore: z.coerce.number().min(0).max(100).optional(),
@@ -88,6 +105,7 @@ export const authRefreshSchema = z.object({
 });
 
 export const userProfileSchema = z.object({
+    expectedRevision: z.coerce.number().int().min(0).optional(),
     fullName: z.string().trim().min(2),
     email: z.string().trim().email(),
     location: z.string().trim().optional(),
@@ -103,6 +121,7 @@ export const userProfileSchema = z.object({
 });
 
 export const userTechnologySchema = z.object({
+    expectedRevision: z.coerce.number().int().min(0).optional(),
     technologies: z.array(z.object({
         name: z.string().trim().min(1),
         category: z.string().trim().optional(),
@@ -111,9 +130,12 @@ export const userTechnologySchema = z.object({
 });
 
 export const userExperiencesSchema = z.object({
+    expectedRevision: z.coerce.number().int().min(0).optional(),
     experiences: z.array(z.object({
+        id: z.string().trim().uuid().optional(),
         company: z.string().trim().min(1),
         title: z.string().trim().min(1),
+        type: z.enum(["COMMERCIAL", "FREELANCE", "INTERNSHIP", "VOLUNTEER"]).optional(),
         location: z.string().trim().optional(),
         startDate: z.string().trim().min(1),
         endDate: z.string().trim().optional(),
@@ -126,13 +148,32 @@ export const userExperiencesSchema = z.object({
 });
 
 export const userEducationsSchema = z.object({
+    expectedRevision: z.coerce.number().int().min(0).optional(),
     educations: z.array(z.object({
+        id: z.string().trim().uuid().optional(),
         institution: z.string().trim().min(1),
         program: z.string().trim().min(1),
         location: z.string().trim().optional(),
         startDate: z.string().trim().optional(),
         endDate: z.string().trim().optional(),
         details: z.array(z.string().trim()).default([]),
+        sortOrder: z.coerce.number().int().optional(),
+    })).default([]),
+});
+
+export const userProjectsSchema = z.object({
+    expectedRevision: z.coerce.number().int().min(0).optional(),
+    projects: z.array(z.object({
+        id: z.string().trim().uuid().optional(),
+        type: z.enum(["PERSONAL", "EDUCATIONAL", "OPEN_SOURCE"]).optional(),
+        name: z.string().trim().min(1),
+        role: z.string().trim().optional(),
+        url: z.string().trim().url().optional(),
+        startDate: z.string().trim().optional(),
+        endDate: z.string().trim().optional(),
+        description: z.string().trim().optional(),
+        bullets: z.array(z.string().trim()).default([]),
+        technologies: z.array(z.string().trim()).default([]),
         sortOrder: z.coerce.number().int().optional(),
     })).default([]),
 });
@@ -189,6 +230,14 @@ export const userDailyAutomationSchema = z.object({
         BACKEND: z.string().trim().uuid().optional(),
         FRONTEND: z.string().trim().uuid().optional(),
     }).optional(),
+});
+
+export const companyBlacklistSchema = z.object({
+    name: z.string().trim().min(1, "Company name is required.").max(200),
+});
+
+export const searchSettingsSchema = z.object({
+    excludeRemote: z.boolean(),
 });
 
 export const REJECTION_REASONS = [

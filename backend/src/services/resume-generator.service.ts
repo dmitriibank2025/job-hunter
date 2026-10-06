@@ -23,6 +23,11 @@ import {
 } from "./ats-resume-validator.service";
 import { logger } from "../Logger/logger";
 import { prisma } from "../infrastructure/prisma";
+import { z } from "zod";
+import { runEvidencePipeline, scoreResumePresentation } from "./resume-pipeline.service";
+import { retrieveRelevantChunks } from "./embedding.service";
+import { buildEvidenceCorpus, buildEvidenceCorpusFromCandidateContext } from "./resume-evidence.service";
+import { hasStructuredCandidateEvidence, type CandidateContext } from "./candidate-context.service";
 
 const MODEL = process.env.RESUME_GENERATION_MODEL ?? "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS ?? 60_000);
@@ -949,6 +954,8 @@ All non-editable lines must remain semantically and stylistically identical to t
 2. ## Summary
    Use the heading exactly as "## Summary".
    Write one compact paragraph of maximum 3 sentences immediately after the header.
+   The Summary paragraph MUST be between 300 and 350 characters long (count characters, not words). If it is shorter, add source-supported scope, competencies, or context; if it is longer, trim adjectives and filler — never invent facts to reach the length.
+   When the source resume (summary or bullets) contains a time-based statement (e.g. "in 2025", "within 4 months"), include at least one in the Summary. When the source contains an improvement metric (e.g. "40 to 10 minutes", a percentage, a monetary amount), include at least one in the Summary. Never fabricate a date, duration, or metric that is not in the source resume; if the source has none, omit it rather than invent one.
    Sentence 1 must start with this exact fixed base role label: "${fixedRoleLabel}" and include years of experience if the source resume supports them.
    Sentence 2 should name 3-4 most relevant competencies for this vacancy using only source-supported wording.
    Sentence 3 should show ownership, scope, or the strongest supported differentiator from the source resume.
@@ -956,6 +963,8 @@ All non-editable lines must remain semantically and stylistically identical to t
    Do not prepend seniority such as "Senior", "Principal", "Lead", or "Junior" unless it is already part of the fixed base role label.
    Match the vacancy direction through supported keywords and bullet emphasis, not by changing the fixed base role label.
    The summary must be consistent with the target title line and Skills section.
+   If you add a third sentence to reach the 300–350 character length, it MUST use only terms that already appear in the Skills section. Do NOT introduce a new keyword, technology, methodology, or label (for example "SaaS", a framework, or a domain word) in the Summary unless that exact term is present in the Skills section — otherwise ATS flags a summary/Skills mismatch and deducts score.
+   For backend and frontend targets, do not let the Summary mention the opposite discipline (e.g. a backend summary must not foreground React/frontend/UI wording) unless the Skills section explicitly lists it.
    Do not use phrases like "I am passionate about", "responsible for", or any banned stock language.
    CRITICAL: Do NOT mention any technology or keyword in the Summary unless it also appears in the Skills section. ATS systems flag keywords that appear in Summary but are missing from Skills — this causes automatic score deductions.
 
@@ -978,8 +987,10 @@ All non-editable lines must remain semantically and stylistically identical to t
    For each position:
    ### YYYY – YYYY | Job Title | Company (Location)
    Project name line when present in the source resume.
-   - 3–6 bullet points for recent/relevant roles
-   - 2–4 bullet points for older/less relevant roles
+   - 3–5 bullet points for the most recent/relevant role
+   - 2–3 bullet points for older/less relevant roles
+   - Every bullet MUST be between 60 and 180 characters long. Expand a too-short bullet with source-supported detail (mechanism, tool, scope); trim or split a too-long bullet without inventing facts.
+   - Preserve the source bullets' time-based statements and improvement metrics when editing — do not drop or weaken a real date or number, and do not add ones the source lacks.
    Technologies: comma-separated list
    The Technologies line must be consistent with the bullets above it:
    - Do not list a technology unless at least one bullet in that same position explicitly supports using it.
@@ -1008,6 +1019,8 @@ If the base resume uses slightly different spacing or markdown conventions, pref
 as long as the required sections remain readable.
 
 SELF-CHECK BEFORE FINALIZING
+- Confirm the Summary is between 300 and 350 characters, and — when the source supports it — contains at least one time-based statement and one improvement metric.
+- Confirm each experience role has the required bullet count (recent role 3–5, older roles 2–3) and that every bullet is between 60 and 180 characters.
 - Confirm there are no duplicated or near-duplicated bullets.
 - Confirm every promoted technology in Summary and top bullets is supported by Skills and source experience.
 - Confirm no claims were introduced that are absent from the source resume.
@@ -1111,25 +1124,46 @@ async function callOpenAIForText(
     scope: string,
     jobId: string,
     userId: string,
+    systemPrompt?: string,
+    jsonMode = false,
+    jsonSchema?: Record<string, unknown>,
 ): Promise<string> {
+    const startedAt = Date.now();
     const response = await getOpenAIClient().chat.completions.create({
         model: MODEL,
         temperature: 0.25,
+        ...(jsonSchema ? { response_format: { type: "json_schema" as const, json_schema: { name: "resume_stage", strict: true, schema: jsonSchema } } } : jsonMode ? { response_format: { type: "json_object" as const } } : {}),
         messages: [
             {
                 role: "system",
-                content:
+                content: systemPrompt ??
                     "You are a precise technical career assistant. The provided base resume is the only source of truth. Never invent experience, never restore removed claims, never replace concrete technical details with generic wording, and never use cliche resume language.",
             },
             { role: "user", content: prompt },
         ],
     });
+    const latencyMs = Date.now() - startedAt;
 
     if (response.usage?.total_tokens) {
+        logger.info(
+            {
+                scope,
+                jobId,
+                model: MODEL,
+                latencyMs,
+                promptTokens: response.usage.prompt_tokens,
+                completionTokens: response.usage.completion_tokens,
+                totalTokens: response.usage.total_tokens,
+            },
+            "[generation] OpenAI call completed",
+        );
         await recordUsageEvent(userId, "OPENAI_TOKENS", response.usage.total_tokens, {
             scope,
             jobId,
             model: MODEL,
+            latencyMs,
+            promptTokens: response.usage.prompt_tokens,
+            completionTokens: response.usage.completion_tokens,
         }).catch((error: unknown) => {
             logger.warn(
                 { error, scope, jobId, userId, model: MODEL },
@@ -1141,7 +1175,7 @@ async function callOpenAIForText(
     const rawContent = response.choices[0]?.message?.content;
     if (!rawContent) throw new Error(`Empty ${scope} response from OpenAI`);
 
-    return normalizeSectionText(cleanAiText(rawContent));
+    return jsonMode ? rawContent : normalizeSectionText(cleanAiText(rawContent));
 }
 
 function isHeaderContactLine(line: string): boolean {
@@ -1911,6 +1945,51 @@ async function finalizeResumeContent(
     };
 }
 
+export async function generateVerifiedResume(
+    job: Job,
+    userId: string,
+    candidateContext: CandidateContext,
+    maxRepairs = ATS_RESUME_REPAIR_ATTEMPTS,
+) {
+    if (candidateContext.userId !== userId) throw new Error("Candidate context belongs to another user");
+    const structured = hasStructuredCandidateEvidence(candidateContext);
+    const result = await runEvidencePipeline({
+        vacancy: { title: job.title, description: job.description },
+        ...(structured
+            ? { candidateContext }
+            : {
+                baseResume: candidateContext.selectedBase.content,
+                fullName: candidateContext.profile.fullName,
+            }),
+        maxRepairs,
+    }, {
+        complete: async (system, input, schema, stage) => JSON.parse(await callOpenAIForText(
+            JSON.stringify({ input }),
+            `resume_pipeline_${stage}`, job.id, userId, system, true, z.toJSONSchema(schema, { reused: "ref" }),
+        )),
+        searchExperience: (query, k) => retrieveRelevantChunks(userId, query, k),
+    });
+    const presentation = scoreResumePresentation(result.content);
+    if (!result.validation.valid) throw new Error("Final deterministic validation must PASS before rendering");
+    const missing = new Set(result.validation.missingRequirements);
+    return {
+        content: result.content,
+        atsScore: result.validation.score.total,
+        atsIssues: presentation.issues,
+        atsMatchedKeywords: result.analysis.requirements.filter(r => !missing.has(r.id)).map(r => r.term),
+        atsMissingKeywords: result.analysis.requirements.filter(r => missing.has(r.id)).map(r => r.term),
+        atsValidatedAt: new Date(),
+        evidenceTrace: {
+            version: 2,
+            candidateRevision: candidateContext.revision,
+            candidateResumeBaseId: candidateContext.selectedBase.id,
+            candidateSource: structured ? "STRUCTURED_CONTEXT" : "LEGACY_SNAPSHOT_ADAPTER",
+            ...result,
+            presentation,
+        },
+    };
+}
+
 export async function generateResumeForJob(
     jobId: string,
     options: GenerationOptions = {},
@@ -1945,16 +2024,8 @@ export async function generateResumeForJob(
     const profile = await getWorkspaceCandidateProfile(options.userId, selectedResumeBaseId);
     if (!profile) throw new Error("Candidate profile not found for this user");
 
-    const tailoringAnalysis = await loadLatestTailoringAnalysis(options.userId, job.id);
-
-    let content = await callOpenAIForText(
-        buildResumePrompt(job, profile.resume, tailoringAnalysis),
-        "resume_generation",
-        jobId,
-        options.userId,
-    );
-    const finalized = await finalizeResumeContent(job, content, options.userId, "resume_generation", profile.resume);
-    content = finalized.content;
+    const finalized = await generateVerifiedResume(job, options.userId, profile.candidateContext);
+    const content = finalized.content;
 
     const folderName = slugify(`${job.company ?? "unknown"}-${job.title}`);
     const resumeFolder = `resumes/${options.userId}/${folderName}`;
@@ -1964,16 +2035,14 @@ export async function generateResumeForJob(
     );
 
     await saveTextFile(resumeFolder, `${resumeBaseName}.md`, content);
+    await saveTextFile(resumeFolder, `${resumeBaseName}.evidence.json`, JSON.stringify(finalized.evidenceTrace, null, 2));
 
     const docxPath = path.join(getStorageRoot(), resumeFolder, `${resumeBaseName}.docx`);
     const pdfPath = path.join(getStorageRoot(), resumeFolder, `${resumeBaseName}.pdf`);
 
-    await createResumeDocxPreservingTemplate({
-        content,
-        baseContent: profile.resume,
-        sourceFilePath: profile.resumeSourceFilePath,
-        outputPath: docxPath,
-    });
+    // Positional template replacement can retain unmatched source paragraphs or
+    // truncate new sections. Render the exact validated content with the existing renderer.
+    await createStyledResumeDocx(content, docxPath);
 
     const pdfFilePath = await createResumePdfFromDocx({
         content,
@@ -2058,15 +2127,8 @@ export async function regenerateResumeVersion(
     const profile = await getWorkspaceCandidateProfile(existing.userId, selectedBaseId);
     if (!profile) throw new Error("Candidate profile not found for this user");
 
-    const tailoringAnalysis = await loadLatestTailoringAnalysis(existing.userId, existing.jobId);
-    let content = await callOpenAIForText(
-        buildResumePrompt(existing.job, profile.resume, tailoringAnalysis),
-        "resume_repair",
-        existing.jobId,
-        existing.userId,
-    );
-    const finalized = await finalizeResumeContent(existing.job, content, existing.userId, "resume_repair", profile.resume);
-    content = finalized.content;
+    const finalized = await generateVerifiedResume(existing.job, existing.userId, profile.candidateContext);
+    const content = finalized.content;
 
     const folderName = slugify(`${existing.job.company ?? "unknown"}-${existing.job.title}`);
     const resumeFolder = `resumes/${existing.userId}/${folderName}`;
@@ -2095,12 +2157,8 @@ export async function regenerateResumeVersion(
 
     await ensureDir(path.dirname(docxPath));
     await fs.writeFile(mdPath, content, "utf8");
-    await createResumeDocxPreservingTemplate({
-        content,
-        baseContent: profile.resume,
-        sourceFilePath: profile.resumeSourceFilePath,
-        outputPath: docxPath,
-    });
+    await fs.writeFile(docxPath.replace(/\.docx$/i, ".evidence.json"), JSON.stringify(finalized.evidenceTrace, null, 2), "utf8");
+    await createStyledResumeDocx(content, docxPath);
 
     const pdfFilePath = await createResumePdfFromDocx({
         content,
@@ -2148,8 +2206,15 @@ export async function generateCoverLetterForJob(
     const profile = await getWorkspaceCandidateProfile(options.userId, selectedResumeBaseId);
     if (!profile) throw new Error("Candidate profile not found for this user");
 
+    const coverEvidence = hasStructuredCandidateEvidence(profile.candidateContext)
+        ? buildEvidenceCorpusFromCandidateContext(profile.candidateContext)
+        : buildEvidenceCorpus(profile.resume, profile.fullName);
+    const verifiedCoverSource = [
+        ...coverEvidence.contactLines,
+        ...coverEvidence.evidence.map(e => `[${e.context}/${e.kind}${e.entityId ? `; ${e.source}` : ""}] ${e.text}`),
+    ].join("\n");
     const rawContent = await callOpenAIForText(
-        buildCoverLetterPrompt(job, profile.resume, profile.fullName),
+        buildCoverLetterPrompt(job, verifiedCoverSource, profile.fullName),
         "cover_letter_generation",
         jobId,
         options.userId,

@@ -11,6 +11,7 @@ export type PlanLimits = {
 
 export type WorkspaceUser = {
   id: string;
+  candidateRevision?: number;
   email: string;
   role?: "USER" | "ADMIN";
   plan: "FREE" | "PRO";
@@ -20,6 +21,8 @@ export type WorkspaceUser = {
   dailyAutomationFullstackResumeBaseId?: string | null;
   dailyAutomationBackendResumeBaseId?: string | null;
   dailyAutomationFrontendResumeBaseId?: string | null;
+  searchExcludeRemote?: boolean;
+  blacklistedCompanies?: BlacklistedCompany[];
   limits?: PlanLimits;
   profile?: {
     fullName: string;
@@ -34,6 +37,7 @@ export type WorkspaceUser = {
   };
   technologies?: Array<{ name: string; category: string }>;
   experiences?: ExperienceEntry[];
+  projects?: ProjectEntry[];
   educations?: EducationEntry[];
   resumeBases?: ResumeBase[];
   linkedinAccounts?: Array<{
@@ -46,6 +50,12 @@ export type WorkspaceUser = {
   }>;
 };
 
+export type BlacklistedCompany = {
+  id: string;
+  name: string;
+  createdAt?: string;
+};
+
 export type AuthTokens = {
   accessToken: string;
   refreshToken: string;
@@ -54,8 +64,10 @@ export type AuthTokens = {
 };
 
 export type ExperienceEntry = {
+  id?: string;
   company: string;
   title: string;
+  type?: "COMMERCIAL" | "FREELANCE" | "INTERNSHIP" | "VOLUNTEER";
   location?: string;
   dates: string;
   project?: string;
@@ -65,11 +77,25 @@ export type ExperienceEntry = {
 };
 
 export type EducationEntry = {
+  id?: string;
   institution: string;
   program: string;
   location?: string;
   dates?: string;
   details?: string;
+};
+
+export type ProjectEntry = {
+  id?: string;
+  type?: "PERSONAL" | "EDUCATIONAL" | "OPEN_SOURCE";
+  name: string;
+  role?: string;
+  url?: string;
+  startDate?: string;
+  endDate?: string;
+  description?: string;
+  bullets?: string[];
+  technologies?: string[];
 };
 
 export type ResumeBase = {
@@ -78,6 +104,15 @@ export type ResumeBase = {
   target: string;
   targetTitle?: string;
   content: string;
+  mode?: "LINKED" | "UPLOADED_SNAPSHOT" | "DETACHED";
+  sourceRevision?: number | null;
+  renderStatus?: "CURRENT" | "STALE" | "PROCESSING" | "FAILED";
+  definition?: {
+    version?: number;
+    target?: string;
+    targetTitle?: string | null;
+    template?: "ATS" | "MODERN" | "COMPACT";
+  };
   pdfFilePath?: string | null;
   isDefault?: boolean;
 };
@@ -90,6 +125,10 @@ export type Job = {
   source?: string;
   url?: string;
   description?: string;
+  postedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  status?: string;
   matchScore?: number;
   analysis?: { recommendation?: string; reason?: string; matchedSkills?: string[]; missingSkills?: string[] };
   resumeVersions?: Array<{
@@ -112,6 +151,9 @@ export type Job = {
     appliedAt?: string;
     ignoredAt?: string;
     notes?: string;
+    rejectionReason?: string;
+    createdAt?: string;
+    updatedAt?: string;
   };
 };
 

@@ -6,6 +6,7 @@ import {
     recordUsageEvent,
     upsertUserJobMatch,
 } from "./user-workspace.service";
+import { hasStructuredCandidateEvidence, renderCandidateContextForPrompt } from "./candidate-context.service";
 import { buildAdaptiveAnalysisPrompt } from "./prompt-learning.service";
 import { selectResumeBaseForJob } from "./resume-base-selector.service";
 import type { ResumeBaseSelectionMap } from "./resume-base-selector.service";
@@ -154,7 +155,9 @@ export async function analyzeJob(jobId: string, options: AnalyzeJobOptions = {})
         userId: options.userId,
         fullName: profile.fullName,
         email: profile.email,
-        resume: profile.resume,
+        resume: hasStructuredCandidateEvidence(profile.candidateContext)
+            ? renderCandidateContextForPrompt(profile.candidateContext)
+            : profile.resume,
         masterSkills,
         jobTitle: job.title,
         jobCompany: job.company ?? "Unknown",

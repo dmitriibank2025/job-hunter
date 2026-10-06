@@ -11,7 +11,14 @@ import { GreenhouseProvider } from "../providers/greenhouse.provider";
 import { GlassdoorProvider } from "../providers/glassdoor.provider";
 import { AllJobsProvider } from "../providers/alljobs.provider";
 import { CenterIsraelCompaniesProvider } from "../providers/center-israel.provider";
+import { LeverProvider } from "../providers/lever.provider";
+import { AshbyProvider } from "../providers/ashby.provider";
+import { ComeetProvider } from "../providers/comeet.provider";
+import { WorkableProvider } from "../providers/workable.provider";
+import { publicJobBoardProviders } from "../providers/public-job-board.provider";
 import { filterRelevantJobs, setSearchLocationOverride } from "../providers/browser-provider-utils";
+import { withJobQuality } from "../providers/job-quality";
+import { SourceAuditTracker } from "../providers/source-audit";
 import { hasAppliedVacancyForJob } from "./applied-vacancy.service";
 import { updateAutomationProgress } from "./job-automation-progress.service";
 import { recordProviderCompanyHits } from "./company-priority.service";
@@ -29,12 +36,17 @@ function createProviderMap(options: {
     userId?: string;
 } = {}): Record<string, JobProvider> {
     return {
+        ...publicJobBoardProviders(),
         LINKEDIN: new LinkedInProvider({
             storageStatePath: options.linkedInStorageStatePath,
             preferences: options.preferences,
             userId: options.userId,
         }),
         GREENHOUSE: new GreenhouseProvider(),
+        LEVER: new LeverProvider(),
+        ASHBY: new AshbyProvider(),
+        COMEET: new ComeetProvider(),
+        WORKABLE: new WorkableProvider(),
         GLASSDOOR: new GlassdoorProvider(),
         DRUSHIM: new DrushimProvider(),
         SQLINK: new SqlinkProvider(),
@@ -116,6 +128,8 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
              output: 0,
              excludedKeyword: 0,
              titleStopword: 0,
+             excludedCompany: 0,
+             remote: 0,
              targetRole: 0,
              targetLocation: 0,
              requiredTech: 0,
@@ -146,6 +160,7 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
          console.log(`\n[Job Collector] Starting job collection from ${providers.length} providers...`);
 
          const allJobs = [];
+         const sourceAudits = new Map<string, SourceAuditTracker>();
          const providerResults: Record<string, {success: number; failed: number; error?: string}> = {};
 
          for (const provider of providers) {
@@ -160,19 +175,54 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
                          phase: "Fetching jobs",
                      },
                  });
-                 const jobs = await searchWithTimeout(provider);
+                 const jobs = (await searchWithTimeout(provider)).map(withJobQuality);
                  if (provider.source === "LINKEDIN" && options.userId && linkedInAccount?.isActive) {
                      await prisma.userLinkedInAccount.update({
                          where: { userId: options.userId },
                          data: { lastUsedAt: new Date() },
                      });
                  }
-                 const relevant = filterRelevantJobs(jobs);
-                 const { jobs: filtered, stats } = filterJobsBySearchPreferences(relevant, preferences);
+                 const audit = new SourceAuditTracker(provider.source);
+                 sourceAudits.set(provider.source, audit);
+                 if (provider.auditReport) Object.assign(audit.report, provider.auditReport);
+                 else audit.increment("discoveredUrls", jobs.length);
+                 const explicitlyRejected = jobs.filter((job) => job.ingestion?.qualityState === "REJECTED");
+                 for (const job of explicitlyRejected.slice(0, 8)) {
+                     audit.reject({
+                         url: job.url,
+                         title: job.title,
+                         classification: job.ingestion?.classification,
+                         reason: job.ingestion?.classificationReasons?.[0] ?? "QUALITY_REJECTED",
+                     });
+                 }
+                 const relevant = filterRelevantJobs(jobs.filter((job) => job.ingestion?.qualityState !== "REJECTED"));
+                 if (!provider.auditReport) {
+                     audit.increment("classifiedJobPages", relevant.length);
+                     audit.increment("normalizedJobs", relevant.length);
+                 }
+                 audit.increment("relevanceRejected", jobs.length - relevant.length);
+                 audit.increment("categoryPagesRejected", explicitlyRejected.filter((job) => job.ingestion?.classification === "category").length);
+                 audit.increment("structuredDataHits", relevant.filter((job) => job.ingestion?.extractionMethod === "json_ld" || job.ingestion?.extractionMethod === "embedded_json" || job.ingestion?.extractionMethod === "official_api").length);
+                 audit.increment("domExtractionHits", relevant.filter((job) => job.ingestion?.extractionMethod === "source_dom" || job.ingestion?.extractionMethod === "heuristic_dom").length);
+                 const { jobs: filtered, stats, decisions } = filterJobsBySearchPreferences(relevant, preferences);
+                 audit.increment("locationRejected", stats.targetLocation + stats.remote);
+                 if (process.env.JOB_FILTER_DEBUG === "true") {
+                     for (const decision of decisions) {
+                         console.log(`[Filter Debug] ${JSON.stringify({
+                             source: provider.source,
+                             title: decision.job.title,
+                             company: decision.job.company ?? null,
+                             checks: decision.checks,
+                             final: decision.final,
+                         })}`);
+                     }
+                 }
                  preferenceFilterStats.input += stats.input;
                  preferenceFilterStats.output += stats.output;
                  preferenceFilterStats.excludedKeyword += stats.excludedKeyword;
                  preferenceFilterStats.titleStopword += stats.titleStopword;
+                 preferenceFilterStats.excludedCompany += stats.excludedCompany;
+                 preferenceFilterStats.remote += stats.remote;
                  preferenceFilterStats.targetRole += stats.targetRole;
                  preferenceFilterStats.targetLocation += stats.targetLocation;
                  preferenceFilterStats.requiredTech += stats.requiredTech;
@@ -191,9 +241,9 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
                  });
                  allJobs.push(...filtered);
                  providerResults[provider.source] = {success: filtered.length, failed: 0};
-                 if (stats.excludedKeyword || stats.titleStopword || stats.targetRole || stats.targetLocation || stats.requiredTech || stats.dateRange) {
+                 if (stats.excludedKeyword || stats.titleStopword || stats.excludedCompany || stats.remote || stats.targetRole || stats.targetLocation || stats.requiredTech || stats.dateRange) {
                      console.log(
-                         `  │  Preference skips: excluded=${stats.excludedKeyword}, titleStopword=${stats.titleStopword}, role=${stats.targetRole}, location=${stats.targetLocation}, tech=${stats.requiredTech}, date=${stats.dateRange}`,
+                         `  │  Preference skips: excluded=${stats.excludedKeyword}, titleStopword=${stats.titleStopword}, blacklistCompany=${stats.excludedCompany}, remote=${stats.remote}, role=${stats.targetRole}, location=${stats.targetLocation}, tech=${stats.requiredTech}, date=${stats.dateRange}`,
                      );
                  }
              } catch (error) {
@@ -228,6 +278,7 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
              }
 
              const result = await createJobIfNew(job);
+             const audit = sourceAudits.get(job.source);
              if (options.userId) {
                  const existingMatch = await prisma.userJobMatch.findUnique({
                      where: {
@@ -253,19 +304,25 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
 
                  if (shouldQueueForUser) {
                      saved.push(result.job);
+                     if (result.isNew) audit?.increment("savedJobs");
+                     else audit?.increment("duplicates");
                  } else {
                      duplicates++;
+                     audit?.increment("duplicates");
                  }
                  continue;
              }
 
              if (result.isNew) {
                  saved.push(result.job);
+                 audit?.increment("savedJobs");
              } else if (result.shouldProcess) {
                  retryable++;
                  saved.push(result.job);
+                 audit?.increment("duplicates");
              } else {
                  duplicates++;
+                 audit?.increment("duplicates");
              }
          }
 
@@ -274,6 +331,7 @@ export async function collectJobs(options: CollectJobsOptions = {}): Promise<Job
          console.log(`  ├─ Retryable existing jobs: ${retryable}`);
          console.log(`  ├─ Duplicates (skipped): ${duplicates}`);
          console.log(`  └─ Already applied (skipped): ${alreadyApplied}`);
+         for (const audit of sourceAudits.values()) audit.log("PERSISTENCE_COMPLETE");
 
          return Object.assign(saved, {
              preferenceFilterStats,

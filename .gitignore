@@ -31,6 +31,7 @@ tmp/
 coverage/
 playwright-report/
 test-results/
+work/
 
 # Local/generated project notes with personal resume data; keep deploy docs explicit instead.
 AUTOMATION_WORKFLOW_COMPLETE.md
@@ -55,3 +56,11 @@ WORKFLOW_FINAL.md
 WORKFLOW_VERIFICATION.md
 НОВАЯ_СИСТЕМА_README.md
 !/backend/backup.sql
+
+# DB dumps and OS cruft (added by assistant)
+backup.sql
+*.DS_Store
+.DS_Store
+
+# Personal resume data — never track (contains PII)
+backend/src/data/base-resumes/

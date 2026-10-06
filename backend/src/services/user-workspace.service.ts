@@ -1,4 +1,7 @@
 import {
+    CandidateExperienceType,
+    CandidateProjectType,
+    Prisma,
     UserJobStatus,
     ResumeBaseTarget,
     SubscriptionPlan,
@@ -16,6 +19,14 @@ import { linkedInStorageStatePathForUser, validateLinkedInStorageStatePath } fro
 import { BasicResumePdfTemplate, createBasicResumePdf } from "./resume-pdf.service";
 import { convertDocxToPdf, createStyledResumeDocx } from "./docx.service";
 import { invalidateMasterSkillsCache } from "./job-analyzer.service";
+import { HttpError } from "../errorHandler/http-error";
+import { getCandidateContext, type CandidateContext } from "./candidate-context.service";
+import { refreshCandidateFactsInTransaction } from "./candidate-facts.service";
+import {
+    buildResumeBaseDefinition,
+    readResumeBaseDefinition,
+    resolveResumeBaseUpdate,
+} from "./resume-base-lifecycle.service";
 
 export type PlanLimit = {
     vacanciesPerDay: number;
@@ -223,9 +234,11 @@ export type WorkspaceCandidateProfile = {
     languages?: string[];
     resume: string;
     resumeSourceFilePath?: string | null;
+    candidateContext: CandidateContext;
 };
 
 type ProfileInput = {
+    expectedRevision?: number;
     fullName: string;
     email: string;
     location?: string | null;
@@ -238,9 +251,23 @@ type ProfileInput = {
     telegramBotToken?: string | null;
 };
 
+export type CandidateMutationResult<T> = {
+    value: T;
+    candidateRevision: number;
+    resumeBases: Array<{
+        id: string;
+        content: string;
+        sourceRevision: number | null;
+        renderStatus: "CURRENT" | "STALE" | "PROCESSING" | "FAILED";
+        pdfFilePath: string | null;
+    }>;
+};
+
 type ExperienceInput = {
+    id?: string;
     company: string;
     title: string;
+    type?: CandidateExperienceType;
     location?: string;
     startDate: string;
     endDate?: string;
@@ -252,12 +279,27 @@ type ExperienceInput = {
 };
 
 type EducationInput = {
+    id?: string;
     institution: string;
     program: string;
     location?: string;
     startDate?: string;
     endDate?: string;
     details?: string[];
+    sortOrder?: number;
+};
+
+type ProjectInput = {
+    id?: string;
+    type?: CandidateProjectType;
+    name: string;
+    role?: string;
+    url?: string;
+    startDate?: string;
+    endDate?: string;
+    description?: string;
+    bullets?: string[];
+    technologies?: string[];
     sortOrder?: number;
 };
 
@@ -290,6 +332,116 @@ function selectTechnologyNames(
         .map((technology) => technology.name);
 }
 
+async function assertCandidateRevision(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    expectedRevision?: number,
+) {
+    // Lock the user row so two concurrent saves cannot both pass the same
+    // revision check and overwrite one another under READ COMMITTED isolation.
+    const rows = await tx.$queryRaw<Array<{ candidateRevision: number }>>`
+        SELECT "candidateRevision"
+        FROM "AppUser"
+        WHERE "id" = ${userId}
+        FOR UPDATE
+    `;
+    if (!rows[0]) throw new Error("User not found.");
+    assertExpectedCandidateRevision(expectedRevision, rows[0].candidateRevision);
+}
+
+export function assertExpectedCandidateRevision(expectedRevision: number | undefined, currentRevision: number) {
+    if (expectedRevision !== undefined && currentRevision !== expectedRevision)
+        throw new HttpError(
+            409,
+            `Candidate data changed since it was loaded (expected revision ${expectedRevision}, current revision ${currentRevision}). Reload and retry.`,
+        );
+}
+
+export async function rebuildLinkedResumeBasesInTransaction(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    candidateRevision: number,
+) {
+    const user = await tx.appUser.findUniqueOrThrow({
+        where: { id: userId },
+        include: {
+            profile: true,
+            technologies: true,
+            experiences: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
+            projects: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
+            educations: { orderBy: [{ sortOrder: "asc" }, { endDate: "desc" }] },
+            resumeBases: { where: { mode: "LINKED" }, orderBy: { createdAt: "asc" } },
+        },
+    });
+    if (!user.profile) return [];
+
+    const rebuilt = [];
+    for (const base of user.resumeBases) {
+        const definition = readResumeBaseDefinition(base.definition, base);
+        const content = buildResumeContent({
+            profile: user.profile,
+            technologies: selectTechnologyNames(user.technologies, base.target),
+            experiences: user.experiences,
+            projects: user.projects,
+            educations: user.educations,
+            targetTitle: base.targetTitle ?? undefined,
+        });
+        await tx.userResumeBase.update({
+            where: { id: base.id },
+            data: {
+                content,
+                sourceRevision: candidateRevision,
+                definition,
+                renderStatus: "PROCESSING",
+            },
+        });
+        rebuilt.push({ id: base.id, content, template: definition.template });
+    }
+    return rebuilt;
+}
+
+async function renderSynchronizedResumeBases(
+    userId: string,
+    rebuilt: Array<{ id: string; content: string; template: BasicResumePdfTemplate }>,
+) {
+    return Promise.all(rebuilt.map(async base => {
+        try {
+            const pdfFilePath = await createResumeBasePdf(userId, base.id, base.content, base.template);
+            const saved = await prisma.userResumeBase.update({
+                where: { id: base.id },
+                data: { renderStatus: "CURRENT" },
+                select: { id: true, content: true, sourceRevision: true, renderStatus: true },
+            });
+            return { ...saved, pdfFilePath };
+        } catch (error) {
+            const failed = await prisma.userResumeBase.update({
+                where: { id: base.id },
+                data: { renderStatus: "FAILED" },
+                select: { id: true, content: true, sourceRevision: true, renderStatus: true },
+            });
+            console.error(`[resume-base] Failed to render synchronized base ${base.id}:`, error);
+            return { ...failed, pdfFilePath: await resumeBasePdfPathIfExists(userId, base.id) };
+        }
+    }));
+}
+
+async function runCandidateMutation<T>(
+    userId: string,
+    expectedRevision: number | undefined,
+    mutate: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<CandidateMutationResult<T>> {
+    const committed = await prisma.$transaction(async tx => {
+        await assertCandidateRevision(tx, userId, expectedRevision);
+        const value = await mutate(tx);
+        const candidateRevision = await refreshCandidateFactsInTransaction(tx, userId);
+        const rebuilt = await rebuildLinkedResumeBasesInTransaction(tx, userId, candidateRevision);
+        return { value, candidateRevision, rebuilt };
+    }, { timeout: 30000 });
+    const resumeBases = await renderSynchronizedResumeBases(userId, committed.rebuilt);
+    invalidateMasterSkillsCache(userId);
+    return { value: committed.value, candidateRevision: committed.candidateRevision, resumeBases };
+}
+
 export async function registerWorkspaceUser(input: {
     email: string;
     fullName?: string;
@@ -299,41 +451,45 @@ export async function registerWorkspaceUser(input: {
 }) {
     const email = input.email.trim().toLowerCase();
     const passwordHash = input.password ? await hashPassword(input.password) : undefined;
-    const user = await prisma.appUser.upsert({
-        where: { email },
-        create: {
-            email,
-            passwordHash,
-            plan: input.plan ?? "FREE",
-            role: input.role ?? "USER",
-            profile: input.fullName
-                ? {
-                    create: {
-                        fullName: input.fullName,
-                        email,
-                    },
-                }
-                : undefined,
-        },
-        update: {
-            plan: input.plan,
-            role: input.role,
-            ...(passwordHash ? { passwordHash } : {}),
-            profile: input.fullName
-                ? {
-                    upsert: {
+    const user = await prisma.$transaction(async tx => {
+        const saved = await tx.appUser.upsert({
+            where: { email },
+            create: {
+                email,
+                passwordHash,
+                plan: input.plan ?? "FREE",
+                role: input.role ?? "USER",
+                profile: input.fullName
+                    ? {
                         create: {
                             fullName: input.fullName,
                             email,
                         },
-                        update: {
-                            fullName: input.fullName,
+                    }
+                    : undefined,
+            },
+            update: {
+                plan: input.plan,
+                role: input.role,
+                ...(passwordHash ? { passwordHash } : {}),
+                profile: input.fullName
+                    ? {
+                        upsert: {
+                            create: {
+                                fullName: input.fullName,
+                                email,
+                            },
+                            update: {
+                                fullName: input.fullName,
+                            },
                         },
-                    },
-                }
-                : undefined,
-        },
-        include: { profile: true },
+                    }
+                    : undefined,
+            },
+            include: { profile: true },
+        });
+        const candidateRevision = await refreshCandidateFactsInTransaction(tx, saved.id);
+        return { ...saved, candidateRevision };
     });
 
     return {
@@ -523,6 +679,7 @@ export async function saveUploadedResume(
         data: { isDefault: false },
     });
 
+    const target = inferResumeTargetFromText(fileName);
     const resumeBase = await prisma.userResumeBase.create({
         data: {
             userId,
@@ -530,10 +687,14 @@ export async function saveUploadedResume(
             // Infer the target from the FILE NAME only — the resume header often
             // says "Frontend-Focused Full Stack…", which would mis-classify a
             // Frontend resume as FULLSTACK. The file name is the explicit signal.
-            target: inferResumeTargetFromText(fileName),
+            target,
             targetTitle: "Uploaded Resume",
             content: textContent,
             sourceFilePath: relativePath,
+            mode: "UPLOADED_SNAPSHOT",
+            sourceRevision: null,
+            definition: buildResumeBaseDefinition({ target, targetTitle: "Uploaded Resume" }),
+            renderStatus: "CURRENT",
             isDefault: true,
         },
     });
@@ -551,6 +712,7 @@ export async function getWorkspaceUser(userId: string) {
             profile: true,
             technologies: { orderBy: [{ category: "asc" }, { name: "asc" }] },
             experiences: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
+            projects: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
             educations: { orderBy: [{ sortOrder: "asc" }, { endDate: "desc" }] },
             resumeBases: { orderBy: { createdAt: "desc" } },
             linkedinAccounts: { orderBy: { updatedAt: "desc" } },
@@ -558,6 +720,10 @@ export async function getWorkspaceUser(userId: string) {
                 orderBy: { updatedAt: "desc" },
                 take: 50,
                 include: { job: true },
+            },
+            blacklistedCompanies: {
+                orderBy: { createdAt: "desc" },
+                select: { id: true, name: true, createdAt: true },
             },
         },
     });
@@ -587,39 +753,42 @@ export async function upsertUserProfile(userId: string, input: ProfileInput) {
     const allowedLanguages = new Set<string>(LANGUAGE_OPTIONS);
     const languages = cleanList(input.languages).filter((language) => allowedLanguages.has(language));
 
-    return prisma.userProfile.upsert({
-        where: { userId },
-        create: {
-            userId,
-            fullName: input.fullName,
-            email: input.email.trim().toLowerCase(),
-            location: input.location,
-            phone: input.phone,
-            linkedin: input.linkedin,
-            github: input.github,
-            portfolio: input.portfolio,
-            languages,
-            summary: input.summary,
-            telegramBotToken: input.telegramBotToken ? encrypt(input.telegramBotToken) : null,
-            // telegramChatId is managed by the connect flow (webhook), not profile saves.
-        },
-        update: {
-            fullName: input.fullName,
-            email: input.email.trim().toLowerCase(),
-            location: input.location,
-            phone: input.phone,
-            linkedin: input.linkedin,
-            github: input.github,
-            portfolio: input.portfolio,
-            languages,
-            summary: input.summary,
-            // Only touch the bot token when the caller actually sent the field,
-            // so unrelated profile saves never wipe it. Empty string clears it.
-            ...(input.telegramBotToken !== undefined
-                ? { telegramBotToken: input.telegramBotToken ? encrypt(input.telegramBotToken) : null }
-                : {}),
-            // telegramChatId intentionally omitted — never client-managed.
-        },
+    return runCandidateMutation(userId, input.expectedRevision, async tx => {
+        const profile = await tx.userProfile.upsert({
+            where: { userId },
+            create: {
+                userId,
+                fullName: input.fullName,
+                email: input.email.trim().toLowerCase(),
+                location: input.location,
+                phone: input.phone,
+                linkedin: input.linkedin,
+                github: input.github,
+                portfolio: input.portfolio,
+                languages,
+                summary: input.summary,
+                telegramBotToken: input.telegramBotToken ? encrypt(input.telegramBotToken) : null,
+                // telegramChatId is managed by the connect flow (webhook), not profile saves.
+            },
+            update: {
+                fullName: input.fullName,
+                email: input.email.trim().toLowerCase(),
+                location: input.location,
+                phone: input.phone,
+                linkedin: input.linkedin,
+                github: input.github,
+                portfolio: input.portfolio,
+                languages,
+                summary: input.summary,
+                // Only touch the bot token when the caller actually sent the field,
+                // so unrelated profile saves never wipe it. Empty string clears it.
+                ...(input.telegramBotToken !== undefined
+                    ? { telegramBotToken: input.telegramBotToken ? encrypt(input.telegramBotToken) : null }
+                    : {}),
+                // telegramChatId intentionally omitted — never client-managed.
+            },
+        });
+        return profile;
     });
 }
 
@@ -664,78 +833,143 @@ export async function upsertUserJobMatch(userId: string, jobId: string, input: {
     });
 }
 
-export async function replaceUserTechnologies(userId: string, technologies: Array<{ name: string; category?: string; level?: string }>) {
-    await prisma.userTechnology.deleteMany({ where: { userId } });
+export async function replaceUserTechnologies(
+    userId: string,
+    technologies: Array<{ name: string; category?: string; level?: string }>,
+    expectedRevision?: number,
+) {
+    return runCandidateMutation(userId, expectedRevision, async tx => {
+        await tx.userTechnology.deleteMany({ where: { userId } });
+        if (technologies.length) {
+            await tx.userTechnology.createMany({
+                data: technologies.map((technology) => {
+                    const catalogItem = TECHNOLOGY_CATALOG.find((item) => item.name.toLowerCase() === technology.name.trim().toLowerCase());
+                    return {
+                        userId,
+                        name: catalogItem?.name ?? technology.name.trim(),
+                        category: technology.category?.trim() || catalogItem?.category || "Other",
+                        level: technology.level?.trim() || null,
+                    };
+                }),
+                skipDuplicates: true,
+            });
+        }
+        return tx.userTechnology.findMany({
+            where: { userId },
+            orderBy: [{ category: "asc" }, { name: "asc" }],
+        });
+    });
+}
 
-    if (!technologies.length) return [];
+export async function replaceUserExperiences(userId: string, experiences: ExperienceInput[], expectedRevision?: number) {
+    return runCandidateMutation(userId, expectedRevision, async tx => {
+        const requestedIds = experiences.flatMap((item) => item.id ? [item.id] : []);
+        if (new Set(requestedIds).size !== requestedIds.length) throw new Error("Duplicate experience IDs are not allowed.");
+        if (requestedIds.length) {
+            const owned = await tx.userExperience.count({ where: { userId, id: { in: requestedIds } } });
+            if (owned !== requestedIds.length) throw new Error("One or more experiences do not belong to this user.");
+        }
 
-    await prisma.userTechnology.createMany({
-        data: technologies.map((technology) => {
-            const catalogItem = TECHNOLOGY_CATALOG.find((item) => item.name.toLowerCase() === technology.name.trim().toLowerCase());
-            return {
-                userId,
-                name: catalogItem?.name ?? technology.name.trim(),
-                category: technology.category?.trim() || catalogItem?.category || "Other",
-                level: technology.level?.trim() || null,
+        const retainedIds: string[] = [];
+        for (const [index, experience] of experiences.entries()) {
+            const data = {
+                company: experience.company.trim(),
+                title: experience.title.trim(),
+                type: experience.type ?? "COMMERCIAL" as CandidateExperienceType,
+                location: experience.location?.trim() || null,
+                startDate: experience.startDate.trim(),
+                endDate: experience.endDate?.trim() || null,
+                project: experience.project?.trim() || null,
+                description: experience.description?.trim() || null,
+                bullets: cleanList(experience.bullets),
+                technologies: cleanList(experience.technologies),
+                sortOrder: experience.sortOrder ?? index,
             };
-        }),
-        skipDuplicates: true,
-    });
-
-    return prisma.userTechnology.findMany({
-        where: { userId },
-        orderBy: [{ category: "asc" }, { name: "asc" }],
-    });
-}
-
-export async function replaceUserExperiences(userId: string, experiences: ExperienceInput[]) {
-    await prisma.userExperience.deleteMany({ where: { userId } });
-
-    if (!experiences.length) return [];
-
-    await prisma.userExperience.createMany({
-        data: experiences.map((experience, index) => ({
-            userId,
-            company: experience.company,
-            title: experience.title,
-            location: experience.location,
-            startDate: experience.startDate,
-            endDate: experience.endDate,
-            project: experience.project,
-            description: experience.description,
-            bullets: cleanList(experience.bullets),
-            technologies: cleanList(experience.technologies),
-            sortOrder: experience.sortOrder ?? index,
-        })),
-    });
-
-    return prisma.userExperience.findMany({
-        where: { userId },
-        orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }],
+            const saved = experience.id
+                ? await tx.userExperience.update({ where: { id: experience.id }, data })
+                : await tx.userExperience.create({ data: { ...data, userId } });
+            retainedIds.push(saved.id);
+        }
+        await tx.userExperience.deleteMany({
+            where: { userId, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
+        });
+        return tx.userExperience.findMany({
+            where: { userId },
+            orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }],
+        });
     });
 }
 
-export async function replaceUserEducations(userId: string, educations: EducationInput[]) {
-    await prisma.userEducation.deleteMany({ where: { userId } });
+export async function replaceUserEducations(userId: string, educations: EducationInput[], expectedRevision?: number) {
+    return runCandidateMutation(userId, expectedRevision, async tx => {
+        const requestedIds = educations.flatMap((item) => item.id ? [item.id] : []);
+        if (new Set(requestedIds).size !== requestedIds.length) throw new Error("Duplicate education IDs are not allowed.");
+        if (requestedIds.length) {
+            const owned = await tx.userEducation.count({ where: { userId, id: { in: requestedIds } } });
+            if (owned !== requestedIds.length) throw new Error("One or more education records do not belong to this user.");
+        }
 
-    if (!educations.length) return [];
-
-    await prisma.userEducation.createMany({
-        data: educations.map((education, index) => ({
-            userId,
-            institution: education.institution,
-            program: education.program,
-            location: education.location,
-            startDate: education.startDate,
-            endDate: education.endDate,
-            details: cleanList(education.details),
-            sortOrder: education.sortOrder ?? index,
-        })),
+        const retainedIds: string[] = [];
+        for (const [index, education] of educations.entries()) {
+            const data = {
+                institution: education.institution.trim(),
+                program: education.program.trim(),
+                location: education.location?.trim() || null,
+                startDate: education.startDate?.trim() || null,
+                endDate: education.endDate?.trim() || null,
+                details: cleanList(education.details),
+                sortOrder: education.sortOrder ?? index,
+            };
+            const saved = education.id
+                ? await tx.userEducation.update({ where: { id: education.id }, data })
+                : await tx.userEducation.create({ data: { ...data, userId } });
+            retainedIds.push(saved.id);
+        }
+        await tx.userEducation.deleteMany({
+            where: { userId, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
+        });
+        return tx.userEducation.findMany({
+            where: { userId },
+            orderBy: [{ sortOrder: "asc" }, { endDate: "desc" }],
+        });
     });
+}
 
-    return prisma.userEducation.findMany({
-        where: { userId },
-        orderBy: [{ sortOrder: "asc" }, { endDate: "desc" }],
+export async function replaceUserProjects(userId: string, projects: ProjectInput[], expectedRevision?: number) {
+    return runCandidateMutation(userId, expectedRevision, async tx => {
+        const requestedIds = projects.flatMap((item) => item.id ? [item.id] : []);
+        if (new Set(requestedIds).size !== requestedIds.length) throw new Error("Duplicate project IDs are not allowed.");
+        if (requestedIds.length) {
+            const owned = await tx.userProject.count({ where: { userId, id: { in: requestedIds } } });
+            if (owned !== requestedIds.length) throw new Error("One or more projects do not belong to this user.");
+        }
+
+        const retainedIds: string[] = [];
+        for (const [index, project] of projects.entries()) {
+            const data = {
+                type: project.type ?? "PERSONAL" as CandidateProjectType,
+                name: project.name.trim(),
+                role: project.role?.trim() || null,
+                url: project.url?.trim() || null,
+                startDate: project.startDate?.trim() || null,
+                endDate: project.endDate?.trim() || null,
+                description: project.description?.trim() || null,
+                bullets: cleanList(project.bullets),
+                technologies: cleanList(project.technologies),
+                sortOrder: project.sortOrder ?? index,
+            };
+            const saved = project.id
+                ? await tx.userProject.update({ where: { id: project.id }, data })
+                : await tx.userProject.create({ data: { ...data, userId } });
+            retainedIds.push(saved.id);
+        }
+        await tx.userProject.deleteMany({
+            where: { userId, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
+        });
+        return tx.userProject.findMany({
+            where: { userId },
+            orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }],
+        });
     });
 }
 
@@ -822,6 +1056,7 @@ export async function createUserResumeBase(userId: string, input: {
             profile: true,
             technologies: true,
             experiences: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
+            projects: { orderBy: [{ sortOrder: "asc" }, { startDate: "desc" }] },
             educations: { orderBy: [{ sortOrder: "asc" }, { endDate: "desc" }] },
             _count: { select: { resumeBases: true } },
         },
@@ -842,34 +1077,53 @@ export async function createUserResumeBase(userId: string, input: {
         profile: user.profile,
         technologies: selectedTechnologies,
         experiences: user.experiences,
+        projects: user.projects,
         educations: user.educations,
         targetTitle: input.targetTitle,
     });
 
-    if (input.isDefault) {
-        await prisma.userResumeBase.updateMany({
-            where: { userId },
-            data: { isDefault: false },
+    const definition = buildResumeBaseDefinition({
+        target,
+        targetTitle: input.targetTitle,
+        template: input.template,
+    });
+    const resumeBase = await prisma.$transaction(async tx => {
+        if (input.isDefault) {
+            await tx.userResumeBase.updateMany({
+                where: { userId },
+                data: { isDefault: false },
+            });
+        }
+        return tx.userResumeBase.create({
+            data: {
+                userId,
+                name: input.name,
+                target,
+                targetTitle: input.targetTitle,
+                content,
+                mode: "LINKED",
+                sourceRevision: user.candidateRevision,
+                definition,
+                renderStatus: "PROCESSING",
+                isDefault: Boolean(input.isDefault),
+            },
         });
-    }
-
-    const resumeBase = await prisma.userResumeBase.create({
-        data: {
-            userId,
-            name: input.name,
-            target,
-            targetTitle: input.targetTitle,
-            content,
-            isDefault: Boolean(input.isDefault),
-        },
     });
 
-    const pdfFilePath = await createResumeBasePdf(userId, resumeBase.id, content, input.template);
-
-    return {
-        ...resumeBase,
-        pdfFilePath,
-    };
+    try {
+        const pdfFilePath = await createResumeBasePdf(userId, resumeBase.id, content, input.template);
+        const current = await prisma.userResumeBase.update({
+            where: { id: resumeBase.id },
+            data: { renderStatus: "CURRENT" },
+        });
+        return { ...current, pdfFilePath };
+    } catch (error) {
+        await prisma.userResumeBase.update({
+            where: { id: resumeBase.id },
+            data: { renderStatus: "FAILED" },
+        });
+        throw error;
+    }
 }
 
 export async function listUserResumeBases(userId: string) {
@@ -892,35 +1146,101 @@ export async function updateUserResumeBase(userId: string, resumeBaseId: string,
     isDefault?: boolean;
     template?: BasicResumePdfTemplate;
 }) {
-    await prisma.userResumeBase.findFirstOrThrow({
+    const existingResumeBase = await prisma.userResumeBase.findFirstOrThrow({
         where: { id: resumeBaseId, userId },
     });
-
-    if (input.isDefault) {
-        await prisma.userResumeBase.updateMany({
-            where: { userId, id: { not: resumeBaseId } },
-            data: { isDefault: false },
-        });
-    }
-
-    return prisma.userResumeBase.update({
-        where: { id: resumeBaseId },
-        data: {
-            name: input.name?.trim(),
-            target: input.target,
-            targetTitle: input.targetTitle === undefined ? undefined : input.targetTitle?.trim() || null,
-            content: input.content,
-            isDefault: input.isDefault,
+    const target = input.target ?? existingResumeBase.target;
+    const userState = await prisma.appUser.findUniqueOrThrow({
+        where: { id: userId },
+        select: {
+            candidateRevision: true,
+            dailyAutomationFullstackResumeBaseId: true,
+            dailyAutomationBackendResumeBaseId: true,
+            dailyAutomationFrontendResumeBaseId: true,
         },
-    }).then(async (resumeBase) => {
-        invalidateMasterSkillsCache(userId);
+    });
+    const lifecycle = resolveResumeBaseUpdate({
+        existing: existingResumeBase,
+        patch: input,
+        currentCandidateRevision: userState.candidateRevision,
+    });
+    const userSelections = input.isDefault ? userState : null;
+    const activation = input.isDefault && userSelections
+        ? buildResumeBaseActivationUpdate(resumeBaseId, target, userSelections)
+        : null;
+
+    const resumeBase = await prisma.$transaction(async tx => {
+        if (input.isDefault) {
+            await tx.userResumeBase.updateMany({
+                where: { userId, id: { not: resumeBaseId } },
+                data: { isDefault: false },
+            });
+        }
+        const updated = await tx.userResumeBase.update({
+            where: { id: resumeBaseId },
+            data: {
+                name: input.name?.trim(),
+                target: input.target,
+                targetTitle: input.targetTitle === undefined ? undefined : input.targetTitle?.trim() || null,
+                content: input.content,
+                mode: lifecycle.mode,
+                sourceRevision: lifecycle.sourceRevision,
+                definition: lifecycle.definition,
+                renderStatus: lifecycle.renderStatus,
+                isDefault: input.isDefault,
+            },
+        });
+        if (activation) {
+            await tx.appUser.update({ where: { id: userId }, data: activation });
+        }
+        return updated;
+    });
+
+    invalidateMasterSkillsCache(userId);
+    if (!lifecycle.shouldRender) {
         return {
             ...resumeBase,
-            pdfFilePath: input.content || input.template
-                ? await createResumeBasePdf(userId, resumeBase.id, input.content ?? resumeBase.content, input.template)
-                : resumeBasePdfPath(userId, resumeBase.id),
+            pdfFilePath: await resumeBasePdfPathIfExists(userId, resumeBase.id),
         };
-    });
+    }
+    try {
+        const pdfFilePath = await createResumeBasePdf(
+            userId,
+            resumeBase.id,
+            input.content ?? resumeBase.content,
+            lifecycle.definition.template,
+        );
+        const current = await prisma.userResumeBase.update({
+            where: { id: resumeBase.id },
+            data: { renderStatus: lifecycle.statusAfterRender },
+        });
+        return { ...current, pdfFilePath };
+    } catch (error) {
+        await prisma.userResumeBase.update({
+            where: { id: resumeBase.id },
+            data: { renderStatus: "FAILED" },
+        });
+        throw error;
+    }
+}
+
+export function buildResumeBaseActivationUpdate(
+    resumeBaseId: string,
+    target: ResumeBaseTarget,
+    current: {
+        dailyAutomationFullstackResumeBaseId: string | null;
+        dailyAutomationBackendResumeBaseId: string | null;
+        dailyAutomationFrontendResumeBaseId: string | null;
+    },
+) {
+    return {
+        dailyAutomationFullstackResumeBaseId: target === "FULLSTACK" ? resumeBaseId
+            : current.dailyAutomationFullstackResumeBaseId === resumeBaseId ? null : undefined,
+        dailyAutomationBackendResumeBaseId: target === "BACKEND" ? resumeBaseId
+            : current.dailyAutomationBackendResumeBaseId === resumeBaseId ? null : undefined,
+        dailyAutomationFrontendResumeBaseId: target === "FRONTEND" ? resumeBaseId
+            : current.dailyAutomationFrontendResumeBaseId === resumeBaseId ? null : undefined,
+    };
 }
 
 export async function deleteUserResumeBase(userId: string, resumeBaseId: string) {
@@ -1038,40 +1358,20 @@ export async function getVacancyCollectionAllowance(userId: string) {
 }
 
 export async function getWorkspaceCandidateProfile(userId: string, resumeBaseId?: string): Promise<WorkspaceCandidateProfile> {
-    const user = await prisma.appUser.findUniqueOrThrow({
-        where: { id: userId },
-        include: {
-            profile: true,
-            resumeBases: {
-                where: resumeBaseId ? { id: resumeBaseId } : undefined,
-                orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-                take: 1,
-            },
-        },
-    });
-
-    if (!user.profile) {
-        throw new Error("Complete the user profile before analyzing jobs or generating resumes.");
-    }
-
-    const resume = user.resumeBases[0]?.content;
-    const resumeSourceFilePath = user.resumeBases[0]?.sourceFilePath;
-    if (!resume) {
-        throw new Error(resumeBaseId
-            ? "Selected base resume was not found for this user."
-            : "Create at least one base resume before analyzing jobs or generating resumes.");
-    }
+    const candidateContext = await getCandidateContext(userId, resumeBaseId);
+    const { profile, selectedBase } = candidateContext;
 
     return {
-        fullName: user.profile.fullName,
-        email: user.profile.email,
-        linkedin: user.profile.linkedin,
-        github: user.profile.github,
-        phone: user.profile.phone,
-        location: user.profile.location,
-        languages: user.profile.languages,
-        resume,
-        resumeSourceFilePath,
+        fullName: profile.fullName,
+        email: profile.email,
+        linkedin: profile.linkedin,
+        github: profile.github,
+        phone: profile.phone,
+        location: profile.location,
+        languages: profile.languages,
+        resume: selectedBase.content,
+        resumeSourceFilePath: selectedBase.sourceFilePath,
+        candidateContext,
     };
 }
 
@@ -1136,7 +1436,7 @@ export async function getAdminUser(userId: string) {
     };
 }
 
-function buildResumeContent(input: {
+export function buildResumeContent(input: {
     profile: ProfileInput;
     technologies: string[];
     experiences: Array<{
@@ -1146,6 +1446,16 @@ function buildResumeContent(input: {
         startDate: string;
         endDate?: string | null;
         project?: string | null;
+        description?: string | null;
+        bullets: string[];
+        technologies: string[];
+    }>;
+    projects?: Array<{
+        name: string;
+        role?: string | null;
+        url?: string | null;
+        startDate?: string | null;
+        endDate?: string | null;
         description?: string | null;
         bullets: string[];
         technologies: string[];
@@ -1195,12 +1505,21 @@ function buildResumeContent(input: {
         const details = item.details.map((detail) => `- ${detail}`);
         return [heading, dates, ...details].filter(Boolean).join("\n");
     });
+    const projects = (input.projects ?? []).map((item) => {
+        const heading = `### ${item.name}${item.role ? ` | ${item.role}` : ""}${item.url ? ` | ${item.url}` : ""}`;
+        const dates = item.startDate || item.endDate ? formatDateRange(item.startDate, item.endDate) : "";
+        const description = item.description || "";
+        const bullets = item.bullets.map((bullet) => `- ${bullet}`);
+        const technologies = item.technologies.length ? `Technologies: ${item.technologies.join(", ")}` : "";
+        return [heading, dates, description, ...bullets, technologies].filter(Boolean).join("\n");
+    });
 
     return [
         header,
         profile.summary ?? "",
         section("Skills", [skills]),
         section("Experience", experience),
+        section("Personal Projects", projects),
         section("Education", education),
     ].filter(Boolean).join("\n\n");
 }

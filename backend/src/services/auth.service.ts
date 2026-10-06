@@ -4,6 +4,7 @@ import { HttpError } from "../errorHandler/http-error";
 import { prisma } from "../infrastructure/prisma";
 import { hashPassword, verifyPassword } from "./password.service";
 import { PLAN_LIMITS } from "./user-workspace.service";
+import { refreshCandidateFactsInTransaction } from "./candidate-facts.service";
 
 const ACCESS_TOKEN_TTL_SECONDS = Number(process.env.ACCESS_TOKEN_TTL_SECONDS ?? 24 * 60 * 60);
 const REFRESH_TOKEN_TTL_DAYS = Number(process.env.REFRESH_TOKEN_TTL_DAYS ?? 30);
@@ -106,39 +107,41 @@ export async function registerWithPassword(input: {
     role?: UserRole;
 }) {
     const email = input.email.trim().toLowerCase();
-    const existing = await prisma.appUser.findUnique({ where: { email } });
-    if (existing?.passwordHash) {
-        throw new Error("User with this email already exists.");
-    }
-
-    const user = existing
-        ? await prisma.appUser.update({
-            where: { id: existing.id },
-            data: {
-                passwordHash: await hashPassword(input.password),
-                plan: input.plan ?? existing.plan,
-                role: input.role ?? existing.role,
-                profile: input.fullName
-                    ? {
-                        upsert: {
-                            create: { fullName: input.fullName, email },
-                            update: { fullName: input.fullName },
-                        },
-                    }
-                    : undefined,
-            },
-            include: { profile: true },
-        })
-        : await prisma.appUser.create({
-            data: {
-                email,
-                passwordHash: await hashPassword(input.password),
-                plan: input.plan ?? "FREE",
-                role: input.role ?? "USER",
-                profile: input.fullName ? { create: { fullName: input.fullName, email } } : undefined,
-            },
-            include: { profile: true },
-        });
+    const passwordHash = await hashPassword(input.password);
+    const user = await prisma.$transaction(async tx => {
+        const existing = await tx.appUser.findUnique({ where: { email } });
+        if (existing?.passwordHash) throw new Error("User with this email already exists.");
+        const saved = existing
+            ? await tx.appUser.update({
+                where: { id: existing.id },
+                data: {
+                    passwordHash,
+                    plan: input.plan ?? existing.plan,
+                    role: input.role ?? existing.role,
+                    profile: input.fullName
+                        ? {
+                            upsert: {
+                                create: { fullName: input.fullName, email },
+                                update: { fullName: input.fullName },
+                            },
+                        }
+                        : undefined,
+                },
+                include: { profile: true },
+            })
+            : await tx.appUser.create({
+                data: {
+                    email,
+                    passwordHash,
+                    plan: input.plan ?? "FREE",
+                    role: input.role ?? "USER",
+                    profile: input.fullName ? { create: { fullName: input.fullName, email } } : undefined,
+                },
+                include: { profile: true },
+            });
+        const candidateRevision = await refreshCandidateFactsInTransaction(tx, saved.id);
+        return { ...saved, candidateRevision };
+    });
 
     return {
         user: publicUser(user),

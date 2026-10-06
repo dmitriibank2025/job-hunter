@@ -43,6 +43,12 @@ export async function analyzeMissingUserJobs(userId: string, resumeBaseId?: stri
     const matches = await prisma.userJobMatch.findMany({
         where: {
             userId,
+            job: {
+                OR: [
+                    { ingestionQualityState: null },
+                    { ingestionQualityState: { not: "REJECTED" } },
+                ],
+            },
             OR: [
                 { matchScore: null },
                 { status: "NEW" },
@@ -80,6 +86,12 @@ export async function listTopUserJobs(userId: string) {
             userId,
             matchScore: {
                 not: null,
+            },
+            job: {
+                OR: [
+                    { ingestionQualityState: null },
+                    { ingestionQualityState: { not: "REJECTED" } },
+                ],
             },
         },
         orderBy: {

@@ -1,10 +1,19 @@
 import { NextFunction, Request, Response } from "express";
 import { HttpError } from "./http-error";
 import { logger } from "../Logger/logger";
+import { ZodError } from "zod";
+
+function validationMessage(error: ZodError): string {
+    return error.issues
+        .map((issue) => `${issue.path.join(".") || "request"}: ${issue.message}`)
+        .join("; ");
+}
 
 export function errorHandler(error: unknown, req: Request, res: Response, _next: NextFunction) {
-    const statusCode = error instanceof HttpError ? error.statusCode : 500;
-    const message = error instanceof Error ? error.message : "Unexpected server error.";
+    const statusCode = error instanceof HttpError ? error.statusCode : error instanceof ZodError ? 400 : 500;
+    const message = error instanceof ZodError
+        ? validationMessage(error)
+        : error instanceof Error ? error.message : "Unexpected server error.";
     const requestId = res.getHeader("X-Request-Id") as string | undefined;
 
     if (statusCode >= 500) {

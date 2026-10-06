@@ -401,7 +401,7 @@ function createParagraph(line: string): Paragraph {
 //   - Technologies: italic line
 //   - Bold skill labels, italic education descriptions
 
-// Exact values extracted from CV_Dmitrii_Bank_FSWD.docx reference
+// Exact values extracted from the approved reference resume design.
 const BLUE    = "2563EB";
 const DARK    = "1A1A2E";
 const GRAY    = "64748B";
@@ -410,38 +410,43 @@ const SEP     = "CBD5E1"; // separator bullet color in contact line
 function styledName(text: string): Paragraph {
     return new Paragraph({
         alignment: AlignmentType.CENTER,
-        spacing: { before: 0, after: 60 },
-        children: [new TextRun({ text, bold: true, size: 52, color: DARK })],
+        spacing: { before: 0, after: 300 },
+        border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: "4F81BD", space: 4 } },
+        style: "Title",
+        keepNext: true,
+        children: [new TextRun({ text, font: "Arial", bold: true, size: 38, color: "141414" })],
     });
 }
 
 function styledSubtitle(text: string): Paragraph {
     return new Paragraph({
         alignment: AlignmentType.CENTER,
-        spacing: { before: 0, after: 120 },
-        children: [new TextRun({ text, bold: false, size: 26, color: BLUE })],
+        spacing: { before: 0, after: 40 },
+        keepNext: true,
+        children: [new TextRun({ text, font: "Arial", bold: true, size: 21, color: "000000" })],
     });
 }
 
 function styledContact(text: string): Paragraph {
-    const parts = text.split(/\s*•\s*/);
+    const parts = text.split(/\s*[|•]\s*|\t+/);
     const children: (TextRun | ExternalHyperlink)[] = [];
     parts.forEach((part, i) => {
         const trimmed = part.trim();
-        if (i > 0) children.push(new TextRun({ text: "   •   ", size: 19, color: SEP }));
+        if (i > 0) children.push(new TextRun({ text: "  |  ", font: "Arial", size: 17, color: "000000" }));
         if (/^https?:\/\/|linkedin\.com|github\.com/i.test(trimmed)) {
             const href = trimmed.startsWith("http") ? trimmed : `https://${trimmed}`;
             children.push(new ExternalHyperlink({
                 link: href,
-                children: [new TextRun({ text: trimmed, color: BLUE, underline: { type: UnderlineType.SINGLE } })],
+                children: [new TextRun({ text: trimmed, font: "Arial", size: 17, color: "000000" })],
             }));
         } else {
-            children.push(new TextRun({ text: trimmed, size: 19, color: GRAY }));
+            children.push(new TextRun({ text: trimmed, font: "Arial", size: 17, color: "000000" }));
         }
     });
     return new Paragraph({
         alignment: AlignmentType.CENTER,
-        spacing: { before: 0, after: 160 },
+        spacing: { before: 0, after: 40 },
+        keepNext: true,
         children,
     });
 }
@@ -615,7 +620,8 @@ function buildStyledParagraphs(content: string): Paragraph[] {
     let inSummary = false;
     let headerDone = false;
     let subtitleDone = false;
-    let contactDone = false;
+    let inHeader = true;
+    let legacyLocation = "";
 
     for (const raw of rawLines) {
         const line = raw.trim();
@@ -629,16 +635,31 @@ function buildStyledParagraphs(content: string): Paragraph[] {
         }
 
         // First non-empty line = name
-        if (!headerDone) { paragraphs.push(styledName(line)); headerDone = true; continue; }
+        if (!headerDone) {
+            const [name, ...location] = line.replace(/^#+\s*/, "").split(/\t+|\s{2,}|\s+\|\s+/);
+            paragraphs.push(styledName(name));
+            // Older sources put the city beside the name. Keep it in the contact block.
+            legacyLocation = location.join(" | ");
+            headerDone = true;
+            continue;
+        }
         // Second = subtitle
-        if (!subtitleDone) { paragraphs.push(styledSubtitle(line)); subtitleDone = true; continue; }
-        // Third = contact
-        if (!contactDone) { paragraphs.push(styledContact(line)); contactDone = true; continue; }
+        if (!subtitleDone) {
+            paragraphs.push(styledSubtitle(line.replace(/^#+\s*/, "")));
+            if (legacyLocation) paragraphs.push(styledContact(legacyLocation));
+            subtitleDone = true;
+            continue;
+        }
 
         // Section headings — strip any leading bullet AND markdown prefix so a
         // skeleton-merge artifact like "● ## Personal Projects" is still detected
         // as the PERSONAL PROJECTS heading instead of rendering as a bullet.
         const lineNoMd = line.replace(/^[•\-\*●]\s*/, "").replace(/^#+\s*/, "");
+        if (inHeader && !SECTION_HEADINGS.has(lineNoMd.toUpperCase())) {
+            paragraphs.push(styledContact(line));
+            continue;
+        }
+        inHeader = false;
         if (SECTION_HEADINGS.has(lineNoMd.toUpperCase())) {
             const heading = lineNoMd.toUpperCase();
             paragraphs.push(styledSectionHeading(heading));

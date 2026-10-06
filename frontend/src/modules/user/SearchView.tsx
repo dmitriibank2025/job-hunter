@@ -54,6 +54,27 @@ const locationOptions = [
   "Remote US",
 ];
 
+const providerOptions = [
+  { value: "LINKEDIN", label: "LinkedIn" },
+  { value: "CENTER_ISRAEL", label: "Company Career Pages" },
+  { value: "GREENHOUSE", label: "Greenhouse" },
+  { value: "LEVER", label: "Lever" },
+  { value: "ASHBY", label: "Ashby" },
+  { value: "COMEET", label: "Comeet" },
+  { value: "WORKABLE", label: "Workable" },
+  { value: "DEVJOBS", label: "DevJobs Israel" },
+  { value: "ALLJOBS", label: "AllJobs" },
+  { value: "DRUSHIM", label: "Drushim" },
+  { value: "JOBMASTER", label: "JobMaster" },
+  { value: "GOTFRIENDS", label: "GotFriends" },
+  { value: "SQLINK", label: "SQLink" },
+  { value: "ETHOSIA", label: "Ethosia" },
+  { value: "NISHA", label: "Nisha" },
+  { value: "JOBIFY", label: "Jobify" },
+  { value: "EMPLOYBL", label: "Employbl" },
+  { value: "GLASSDOOR", label: "Glassdoor" },
+];
+
 const excludedKeywordOptions = [
   "PHP",
   "WordPress",
@@ -127,6 +148,37 @@ function OptionChips({
   );
 }
 
+function ProviderChips({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const selected = splitSelected(value);
+  const values = providerOptions.map((option) => option.value);
+
+  return (
+    <div className="search-option-group">
+      <strong>Search Sources</strong>
+      <div>
+        {providerOptions.map((option) => (
+          <label className="tech-chip" key={option.value} title={option.value === "ETHOSIA" ? "Requires an authorized Ethosia/Bright.source search URL" : undefined}>
+            <input
+              type="checkbox"
+              checked={selected.has(option.value)}
+              disabled={selected.size === 1 && selected.has(option.value)}
+              onChange={(event) => onChange(toggleCsv(value, option.value, event.target.checked, values))}
+            />
+            {option.label}
+          </label>
+        ))}
+      </div>
+      <small>Providers search uses only the selected sources. Some ATS sources require configured company boards.</small>
+    </div>
+  );
+}
+
 function RoleResumeSelect({
   label,
   target,
@@ -183,12 +235,14 @@ export function SearchView({
   useEffect(() => {
     const targetRoles = sanitizeCsv(settings.targetRoles, roleOptions);
     const targetLocations = sanitizeCsv(settings.targetLocations, locationOptions);
+    const searchProviders = sanitizeCsv(settings.searchProviders, providerOptions.map((option) => option.value));
     const requiredTech = catalog.length ? sanitizeCsv(settings.requiredTech, technologyOptions) : settings.requiredTech;
     const excludedKeywords = sanitizeCsv(settings.excludedKeywords, excludedKeywordOptions);
 
     if (
       targetRoles !== settings.targetRoles ||
       targetLocations !== settings.targetLocations ||
+      searchProviders !== settings.searchProviders ||
       requiredTech !== settings.requiredTech ||
       excludedKeywords !== settings.excludedKeywords
     ) {
@@ -196,6 +250,7 @@ export function SearchView({
         ...settings,
         targetRoles,
         targetLocations,
+        searchProviders: searchProviders || providerOptions[0].value,
         requiredTech,
         excludedKeywords,
         searchLocation: selectedOptions(targetLocations, locationOptions)[0] || settings.searchLocation,
@@ -209,8 +264,9 @@ export function SearchView({
         <section className="surface">
           <SectionHead title="Search Preferences" subtitle="Excluded keywords are sent to backend filtering." />
           <div className="search-explainer">
-            <strong>LinkedIn search conditions</strong>
-            <span>Default backend providers: LinkedIn, Greenhouse, Glassdoor unless source mode is Product Firms or Email Jobs.</span>
+            <strong>Vacancy search conditions</strong>
+            <span>Providers search combines LinkedIn, verified company pages, official ATS feeds (Greenhouse, Lever, Ashby, Comeet, Workable), Israeli job boards and configured aggregators.</span>
+            <span>Official company and ATS feeds are preferred for checking whether a vacancy is still published; board results are deduplicated before matching.</span>
             <span>LinkedIn search URLs are built from the selected roles and locations, with results limited by the selected date range.</span>
             <span>Before opening job details, LinkedIn prefilters titles by selected engineering roles. Then backend filters by role, location, required tech, excluded keywords, date range, and minimum match score.</span>
           </div>
@@ -240,6 +296,7 @@ export function SearchView({
           </div>
           <OptionChips label="Target Roles" value={settings.targetRoles} options={roleOptions} onChange={(value) => persist({ ...settings, targetRoles: value })} />
           <OptionChips label="Locations" value={settings.targetLocations} options={locationOptions} onChange={(value) => persist({ ...settings, targetLocations: value, searchLocation: selectedOptions(value, locationOptions)[0] || settings.searchLocation })} />
+          <ProviderChips value={settings.searchProviders} onChange={(value) => persist({ ...settings, searchProviders: value })} />
           <OptionChips label="Required Technologies" value={settings.requiredTech} options={technologyOptions} onChange={(value) => persist({ ...settings, requiredTech: value })} />
           <OptionChips label="Excluded Keywords" value={settings.excludedKeywords} options={excludedKeywordOptions} onChange={(value) => persist({ ...settings, excludedKeywords: value })} />
           <div className="form-grid">
@@ -256,7 +313,7 @@ export function SearchView({
             </select></label>
           </div>
           <div className="inline-actions">
-            <button className="btn btn-primary" onClick={() => onRunSearch("PROVIDERS")}>Providers</button>
+            <button className="btn btn-primary" onClick={() => onRunSearch("PROVIDERS")}>Search Selected Sources</button>
             <button className="btn btn-secondary" onClick={() => onRunSearch("CENTER_ISRAEL")}>Product Firms</button>
             <button className="btn btn-secondary" onClick={() => onRunSearch("EMAIL")}>Email Jobs</button>
           </div>

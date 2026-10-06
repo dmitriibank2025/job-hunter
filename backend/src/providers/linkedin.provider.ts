@@ -77,12 +77,13 @@ const DESCRIPTION_SELECTORS = [
 ] as const;
 
 const JOB_CARD_SELECTOR = [
+    "[componentkey^='job-card-component-ref-']",
     "li.scaffold-layout__list-item[data-occludable-job-id]",
     "li[data-occludable-job-id]",
     "[data-job-id]",
     "[data-entity-urn*='urn:li:jobPosting:']",
-    "a[href*='/jobs/view/']",
-    "a[href*='currentJobId=']",
+    "li a[href*='/jobs/view/']",
+    ".base-card a[href*='/jobs/view/']",
 ].join(",");
 
 // Модальные диалоги которые мешают кликать
@@ -121,13 +122,36 @@ function toPositiveInt(value: string | undefined, fallback: number): number {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function linkedInTimeFilter(preferences?: SearchPreferences): string {
+export function linkedInTimeFilter(preferences?: SearchPreferences): string {
     const days = Number(preferences?.dateRangeDays);
     if (!Number.isFinite(days) || days <= 0) return LINKEDIN_TIME_FILTER;
-    if (days <= 1) return "r86400";
-    if (days <= 7) return "r604800";
-    if (days <= 30) return "r2592000";
-    return LINKEDIN_TIME_FILTER;
+    return `r${Math.ceil(days * 86400)}`;
+}
+
+export function isLinkedInJobWithinRange(postedAt: Date | undefined, days?: number, now = Date.now()): boolean {
+    if (!days || !Number.isFinite(days) || days <= 0) return true;
+    const timestamp = postedAt?.getTime();
+    return timestamp !== undefined && Number.isFinite(timestamp)
+        && timestamp >= now - days * 86400000 && timestamp <= now;
+}
+
+export function nextEmptyPageCount(found: number, previous: number): number {
+    return found === 0 ? previous + 1 : 0;
+}
+
+export function parseLinkedInPostedAt(value?: string, now = Date.now()): Date | undefined {
+    if (!value) return undefined;
+    const text = value.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "").trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+        const date = new Date(text);
+        return Number.isFinite(date.getTime()) ? date : undefined;
+    }
+    const match = text.match(/(\d+)\s*(minutes?|hours?|days?|weeks?|months?|דקות|דקה|שעות|שעה|ימים|יום|שבועות|שבוע|חודשים|חודש)/i);
+    if (!match) return undefined;
+    const unit = match[2].toLowerCase();
+    const scale = /^(minute|דק)/.test(unit) ? 60000 : /^(hour|שע)/.test(unit) ? 3600000
+        : /^(day|ימ|יום)/.test(unit) ? 86400000 : /^(week|שבוע)/.test(unit) ? 604800000 : 2592000000;
+    return new Date(now - Number(match[1]) * scale);
 }
 
 // LinkedIn personalised "Top Applicant" collection — always scanned first
@@ -135,7 +159,7 @@ function linkedInTimeFilter(preferences?: SearchPreferences): string {
 // Requires an active LinkedIn session; skipped automatically if not logged in.
 const TOP_APPLICANT_URL = "https://www.linkedin.com/jobs/collections/top-applicant/";
 
-function linkedInSearchUrls(preferences?: SearchPreferences): string[] {
+export function linkedInSearchUrls(preferences?: SearchPreferences): string[] {
     const preferredRoles = preferences?.targetRoles?.filter(Boolean) ?? [];
     const preferredLocations = preferences?.targetLocations?.filter(Boolean) ?? [];
     const timeFilter = linkedInTimeFilter(preferences);
@@ -198,7 +222,15 @@ function linkedInSearchUrls(preferences?: SearchPreferences): string[] {
     }
 
     // Always put top-applicant first — personalised recommendations are highest signal.
-    return [TOP_APPLICANT_URL, ...baseUrls];
+    baseUrls = baseUrls.map(value => {
+        const url = new URL(value);
+        if (!isCollectionUrl(value)) url.searchParams.set("f_TPR", timeFilter);
+        return url.toString();
+    });
+    // Collections cannot enforce a requested publication window.
+    return preferences?.dateRangeDays
+        ? baseUrls.filter(value => !isCollectionUrl(value))
+        : [TOP_APPLICANT_URL, ...baseUrls];
 }
 
 function isCollectionUrl(searchUrl: string): boolean {
@@ -309,7 +341,7 @@ async function fetchLinkedInHtml(url: string): Promise<string> {
 // недостаточно: дополнительно берём IDs из href/currentJobId/data-entity-urn.
 // Передаём как строку чтобы esbuild не добавил __name() → ReferenceError.
 
-const EXTRACT_JOB_IDS_SCRIPT = /* javascript */ `
+export const EXTRACT_JOB_IDS_SCRIPT = /* javascript */ `
 function extractJobIds(maxCards) {
     var seen = new Set();
     var ids = [];
@@ -322,16 +354,19 @@ function extractJobIds(maxCards) {
     }
 
     var items = Array.from(document.querySelectorAll([
+        "[componentkey^='job-card-component-ref-']",
         "li.scaffold-layout__list-item",
         "li[data-occludable-job-id]",
         "[data-job-id]",
         "[data-entity-urn*='urn:li:jobPosting:']",
-        "a[href*='/jobs/view/']",
-        "a[href*='currentJobId=']"
+        "li a[href*='/jobs/view/']",
+        ".base-card a[href*='/jobs/view/']"
     ].join(",")));
 
     for (var i = 0; i < items.length && ids.length < maxCards; i++) {
         var item = items[i];
+        var componentMatch = (item.getAttribute("componentkey") || "").match(/^job-card-component-ref-(\\d+)$/);
+        if (componentMatch) add(componentMatch[1]);
         add(item.getAttribute("data-occludable-job-id"));
         add(item.getAttribute("data-job-id"));
 
@@ -359,11 +394,28 @@ function extractJobIds(maxCards) {
 // После того как LinkedIn открыл правую панель с currentJobId,
 // читаем title/company/location из самого <li> по jobId.
 
-const EXTRACT_CARD_META_SCRIPT = /* javascript */ `
+export const EXTRACT_CARD_META_SCRIPT = /* javascript */ `
 function extractCardMeta(jobId) {
+    var modern = document.querySelector("[componentkey='job-card-component-ref-" + jobId + "']");
+    if (modern) {
+        var rows = Array.from(modern.querySelectorAll("p")).map(function(p) {
+            var visible = p.querySelector("span[aria-hidden='true']");
+            return ((visible || p).textContent || "").replace(/[\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]/g, "").replace(/\\s+/g, " ").trim();
+        }).filter(Boolean);
+        var time = modern.querySelector("time");
+        return { title: rows[0] || "Unknown title", company: rows[1], location: rows[2],
+            postedAt: time ? time.getAttribute("datetime") : rows.slice(3).find(function(row) { return /ago|לפני/i.test(row); }) };
+    }
     var li = document.querySelector(
-        "li.scaffold-layout__list-item[data-occludable-job-id='" + jobId + "']"
+        "[data-occludable-job-id='" + jobId + "'], [data-job-id='" + jobId + "'], [data-entity-urn='urn:li:jobPosting:" + jobId + "']"
     );
+    if (!li) {
+        var link = Array.from(document.querySelectorAll("a[href*='/jobs/view/'],a[href*='currentJobId=']")).find(function(a) {
+            var match = (a.getAttribute("href") || "").match(/(?:jobs\\/view\\/|currentJobId=)(\\d+)/);
+            return match && match[1] === jobId;
+        });
+        li = link && link.closest("li, .base-card, .job-card-container");
+    }
 
     if (!li) return null;
 
@@ -377,6 +429,7 @@ function extractCardMeta(jobId) {
         text(li, ".job-card-list__title") ||
         text(li, "[class*='job-card-list__title']") ||
         text(li, ".artdeco-entity-lockup__title") ||
+        text(li, ".base-search-card__title") ||
         (() => {
             var a = li.querySelector("a[aria-label]");
             return a ? (a.getAttribute("aria-label") || "").trim() || undefined : undefined;
@@ -386,12 +439,14 @@ function extractCardMeta(jobId) {
     var company =
         text(li, ".job-card-container__primary-description") ||
         text(li, ".artdeco-entity-lockup__subtitle") ||
-        text(li, ".job-card-container__company-name");
+        text(li, ".job-card-container__company-name") ||
+        text(li, ".base-search-card__subtitle");
 
     var location =
         text(li, ".job-card-container__metadata-item") ||
         text(li, ".artdeco-entity-lockup__caption") ||
-        text(li, ".job-card-list__location");
+        text(li, ".job-card-list__location") ||
+        text(li, ".job-search-card__location");
 
     var timeEl = li.querySelector("time");
     var postedAt = timeEl
@@ -578,7 +633,11 @@ export class LinkedInProvider implements JobProvider {
             });
 
             const jobs = await this.fetchDetails(context, filtered);
-            return filterRelevantJobs(jobs);
+            const datedJobs = jobs.filter(job => isLinkedInJobWithinRange(job.postedAt, this.options.preferences?.dateRangeDays));
+            if (datedJobs.length !== jobs.length) {
+                console.log(`[LinkedIn] Date filter: kept=${datedJobs.length}, outside window or unverified date=${jobs.length - datedJobs.length}`);
+            }
+            return filterRelevantJobs(datedJobs.filter(job => !!job.title && job.title !== "Unknown title"));
 
         } finally {
             await context?.close();
@@ -623,7 +682,7 @@ export class LinkedInProvider implements JobProvider {
             }
 
             console.log(`[LinkedIn] guest start=${start}: found=${matches.length}, new=${newOnPage}, total=${cards.length}`);
-            if (newOnPage === 0) break;
+            if (matches.length === 0) break;
         }
 
         return cards;
@@ -806,14 +865,12 @@ export class LinkedInProvider implements JobProvider {
                         }
                     }
 
-                    if (newOnPage === 0) {
-                        emptyPages++;
+                    emptyPages = nextEmptyPageCount(jobIds.length, emptyPages);
+                    if (jobIds.length === 0) {
                         if (emptyPages >= LINKEDIN_EMPTY_PAGE_STOP) {
                             console.log(`[LinkedIn] Stopping after ${emptyPages} empty pages`);
                             break;
                         }
-                    } else {
-                        emptyPages = 0;
                     }
                 }
             }
@@ -843,7 +900,7 @@ export class LinkedInProvider implements JobProvider {
                 location: card.location,
                 url: card.url,
                 externalJobId: card.jobId,
-                postedAt: card.postedAt ? new Date(card.postedAt) : undefined,
+                postedAt: parseLinkedInPostedAt(card.postedAt),
                 source: "LINKEDIN",
                 description: cardDescription(card),
             }));
@@ -940,7 +997,7 @@ export class LinkedInProvider implements JobProvider {
 
                     const postedAt =
                         card.postedAt
-                            ? new Date(card.postedAt)
+                            ? parseLinkedInPostedAt(card.postedAt)
                             : await page
                                 .locator("time")
                                 .first()
@@ -968,7 +1025,7 @@ export class LinkedInProvider implements JobProvider {
                         location: card.location,
                         url: card.url,
                         externalJobId: card.jobId,
-                        postedAt: card.postedAt ? new Date(card.postedAt) : undefined,
+                        postedAt: parseLinkedInPostedAt(card.postedAt),
                         source: "LINKEDIN",
                         description: fallbackDescription(card),
                     });
@@ -999,7 +1056,7 @@ export class LinkedInProvider implements JobProvider {
             location: textBetween(html, /topcard__flavor topcard__flavor--bullet[^>]*>([\s\S]*?)<\/span>/i) ?? card.location,
             url: card.url,
             externalJobId: card.jobId,
-            postedAt: card.postedAt ? new Date(card.postedAt) : undefined,
+            postedAt: parseLinkedInPostedAt(/<time[^>]*datetime="([^"]+)"/i.exec(html)?.[1] ?? card.postedAt),
             source: "LINKEDIN",
             description: description.slice(0, 5_000),
         };

@@ -30,6 +30,7 @@ import type {
   WorkspaceUser,
 } from "./types/domain";
 import { fileToBase64, splitDateRange, splitLines, splitTerms } from "./utils/form";
+import { buildBlockedSet, isBlockedCompany } from "./utils/company";
 
 declare global {
   interface Window {
@@ -124,7 +125,7 @@ export function App() {
   const [linkedinConnectionId, setLinkedinConnectionId] = useState("");
   const [manualJob, setManualJob] = useState({ url: "", title: "", company: "", location: "", description: "" });
   const [selectedJobId, setSelectedJobId] = useState("");
-  const [vacancyFilters, setVacancyFilters] = useState({ title: "", minScore: "0", status: "ALL" });
+  const [vacancyFilters, setVacancyFilters] = useState({ title: "", minScore: "0", status: "ALL", dateRange: "ALL", sortBy: "relevance" });
   const [statistics, setStatistics] = useState<JobStatistics | null>(null);
   const [appliedVacancies, setAppliedVacancies] = useState<AppliedVacancy[]>([]);
   const [rejectedResumeReport, setRejectedResumeReport] = useState<RejectedResumeReport | null>(null);
@@ -301,9 +302,9 @@ export function App() {
     setEducations((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
   }
 
-  function applyUser(nextUser: WorkspaceUser) {
+  function applyUser(nextUser: WorkspaceUser, preferredResumeBaseId?: string) {
     const defaultResume = nextUser.resumeBases?.find((item) => item.isDefault) ?? nextUser.resumeBases?.[0];
-    const selectedForUser = nextUser.resumeBases?.some((item) => item.id === settings.selectedResumeBaseId)
+    const selectedForUser = preferredResumeBaseId && nextUser.resumeBases?.some(item => item.id === preferredResumeBaseId) ? preferredResumeBaseId : nextUser.resumeBases?.some((item) => item.id === settings.selectedResumeBaseId)
         ? settings.selectedResumeBaseId
         : defaultResume?.id || "";
     setUser(nextUser);
@@ -331,8 +332,10 @@ export function App() {
     });
     setSelectedTech(new Set((nextUser.technologies || []).map((item) => item.name)));
     const loadedExperiences: ExperienceEntry[] = (nextUser.experiences || []).map((item: any) => ({
+      id: item.id,
       company: item.company || "",
       title: item.title || "",
+      type: item.type || "COMMERCIAL",
       location: item.location || "",
       dates: [item.startDate, item.endDate].filter(Boolean).join("-") || "2024-Present",
       project: item.project || "",
@@ -342,6 +345,7 @@ export function App() {
     }));
     setExperiences(loadedExperiences.length ? loadedExperiences : [emptyExperience]);
     const loadedEducations: EducationEntry[] = (nextUser.educations || []).map((item: any) => ({
+      id: item.id,
       institution: item.institution || "",
       program: item.program || "",
       location: item.location || "",
@@ -363,7 +367,7 @@ export function App() {
         name: defaultResume.name,
         target: defaultResume.target,
         targetTitle: defaultResume.targetTitle || "",
-        template: "ATS",
+        template: defaultResume.definition?.template || "ATS",
       });
       setResumePreview(defaultResume.content);
     } else {
@@ -492,6 +496,7 @@ export function App() {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        expectedRevision: user?.candidateRevision,
         fullName: settings.accountFullName,
         email: settings.accountEmail,
         ...rest,
@@ -514,25 +519,29 @@ export function App() {
     await api(`/users/${userId}/technologies`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ technologies }),
+      body: JSON.stringify({ technologies, expectedRevision: user?.candidateRevision }),
     });
+    const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
+    applyUser(loaded.user);
     setStatus("Technologies saved.");
   }
 
   async function saveHistory() {
     const userId = requireUserId();
-    await Promise.all([
-      api(`/users/${userId}/experiences`, {
+    const experienceResult = await api<{ candidateRevision: number }>(`/users/${userId}/experiences`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          expectedRevision: user?.candidateRevision,
           experiences: experiences
               .filter((item) => item.company && item.title)
               .map((item, sortOrder) => {
                 const dates = splitDateRange(item.dates || "");
                 return {
+                  id: item.id,
                   company: item.company,
                   title: item.title,
+                  type: item.type || "COMMERCIAL",
                   location: item.location || undefined,
                   startDate: dates.startDate || "Present",
                   endDate: dates.endDate,
@@ -544,16 +553,18 @@ export function App() {
                 };
               }),
         }),
-      }),
-      api(`/users/${userId}/educations`, {
+      });
+    await api(`/users/${userId}/educations`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          expectedRevision: experienceResult.candidateRevision,
           educations: educations
               .filter((item) => item.institution && item.program)
               .map((item, sortOrder) => {
                 const dates = splitDateRange(item.dates || "");
                 return {
+                  id: item.id,
                   institution: item.institution,
                   program: item.program,
                   location: item.location || undefined,
@@ -564,8 +575,9 @@ export function App() {
                 };
               }),
         }),
-      }),
-    ]);
+      });
+    const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
+    applyUser(loaded.user);
     setStatus("Experience and education saved.");
   }
 
@@ -582,9 +594,8 @@ export function App() {
       }),
     });
     setResumePreview(data.resumeBase.content);
-    persist({ ...settings, selectedResumeBaseId: data.resumeBase.id });
     const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
-    applyUser(loaded.user);
+    applyUser(loaded.user, data.resumeBase.id);
     setStatus("Resume file uploaded and parsed.");
   }
 
@@ -628,7 +639,7 @@ export function App() {
     applyUser(loaded.user);
     setEditingResumeBaseId(data.resumeBase.id);
     persist({ ...settings, selectedResumeBaseId: data.resumeBase.id });
-    setStatus("Base resume saved.");
+    setStatus(`Base resume saved and activated for ${data.resumeBase.target} generation.`);
   }
 
   async function deleteBaseResume() {
@@ -650,7 +661,12 @@ export function App() {
     if (!selectedResumeBaseId) throw new Error("Select or create a base resume before searching.");
     const label = sourceMode === "PROVIDERS" ? "Provider vacancy search" : `${sourceMode} vacancy search`;
     startOperation(label);
-    addStep(sourceMode === "EMAIL" ? "Scanning Gmail application history..." : "Connecting to job providers...");
+    const selectedProviders = splitTerms(settings.searchProviders);
+    addStep(sourceMode === "EMAIL"
+      ? "Scanning Gmail application history..."
+      : sourceMode === "PROVIDERS"
+        ? `Connecting to ${selectedProviders.length} selected job sources...`
+        : "Connecting to company career pages...");
     try {
       const data = await api<any>("/jobs/automation/run", {
         method: "POST",
@@ -661,6 +677,7 @@ export function App() {
           resumeBaseIds: selectedResumeBaseIds,
           searchLocation: settings.searchLocation,
           sourceMode,
+          providerNames: sourceMode === "PROVIDERS" ? selectedProviders : undefined,
           preferences: {
             targetRoles: splitTerms(settings.targetRoles),
             targetLocations: splitTerms(settings.targetLocations),
@@ -702,7 +719,11 @@ export function App() {
           userId,
           resumeBaseId: selectedResumeBaseId || undefined,
           resumeBaseIds: selectedResumeBaseIds,
-          ...manualJob,
+          url: manualJob.url.trim() || undefined,
+          title: manualJob.title.trim() || undefined,
+          company: manualJob.company.trim() || undefined,
+          location: manualJob.location.trim() || undefined,
+          description: manualJob.description.trim() || undefined,
         }),
       });
       addStep("Analyzing job fit with AI...");
@@ -1093,6 +1114,40 @@ export function App() {
     setStatus(settings.enabled ? `Daily automation enabled at ${settings.time} ${settings.timezone}.` : "Daily automation disabled.");
   }
 
+  async function saveSearchExcludeRemote(excludeRemote: boolean) {
+    const userId = requireUserId();
+    await api(`/users/${userId}/search-settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ excludeRemote }),
+    });
+    const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
+    applyUser(loaded.user);
+    setStatus(excludeRemote ? "Remote vacancies will be excluded from searches." : "Remote vacancies will be included in searches.");
+  }
+
+  async function addBlacklistedCompany(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const userId = requireUserId();
+    await api(`/users/${userId}/blacklist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: trimmed }),
+    });
+    const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
+    applyUser(loaded.user);
+    setStatus(`"${trimmed}" added to the company blacklist.`);
+  }
+
+  async function removeBlacklistedCompany(companyId: string) {
+    const userId = requireUserId();
+    await api(`/users/${userId}/blacklist/${companyId}`, { method: "DELETE" });
+    const loaded = await api<{ user: WorkspaceUser }>(`/users/${userId}`);
+    applyUser(loaded.user);
+    setStatus("Company removed from the blacklist.");
+  }
+
   async function analyzeMissingJobs() {
     if (!guardBusy("analyze missing vacancies")) return;
     const userId = requireUserId();
@@ -1126,27 +1181,56 @@ export function App() {
     }
   }
 
+  const blockedSet = useMemo(() => buildBlockedSet(user?.blacklistedCompanies), [user?.blacklistedCompanies]);
+
+  const jobDate = (job: Job) => {
+    const raw = job.postedAt || job.createdAt;
+    const t = raw ? new Date(raw).getTime() : 0;
+    return Number.isNaN(t) ? 0 : t;
+  };
+  const bestAts = (job: Job) =>
+    (job.resumeVersions || []).reduce((max, rv) => Math.max(max, rv.atsScore ?? -1), -1);
+
   const visibleJobs = useMemo(() => {
     const titleQuery = vacancyFilters.title.trim().toLowerCase();
     const minScore = Number(vacancyFilters.minScore || 0);
     const statusFilter = vacancyFilters.status || "ALL";
+    const dateRange = vacancyFilters.dateRange || "ALL";
+    const sortBy = vacancyFilters.sortBy || "relevance";
+    const cutoff = dateRange === "ALL" ? 0 : Date.now() - Number(dateRange) * 24 * 60 * 60 * 1000;
 
-    return jobs.filter((job) => {
+    const filtered = jobs.filter((job) => {
       const score = job.userMatch?.matchScore ?? job.matchScore ?? 0;
       const titleMatch = !titleQuery || `${job.title} ${job.company || ""}`.toLowerCase().includes(titleQuery);
       const isApplied = Boolean(job.userMatch?.appliedAt) || job.userMatch?.status === "APPLIED";
       const isRejected = job.userMatch?.status === "REJECTED";
       const isIgnored = Boolean(job.userMatch?.ignoredAt) || job.userMatch?.status === "IGNORED";
+      const isBlocked = isBlockedCompany(job.company, blockedSet);
       const statusMatch =
         statusFilter === "ALL" ||
         (statusFilter === "APPLIED" && isApplied) ||
         (statusFilter === "REJECTED" && isRejected) ||
         (statusFilter === "IGNORED" && isIgnored) ||
-        (statusFilter === "ACTIVE" && !isApplied && !isRejected && !isIgnored);
+        (statusFilter === "BLOCKED" && isBlocked) ||
+        (statusFilter === "ACTIVE" && !isApplied && !isRejected && !isIgnored && !isBlocked);
+      const dateMatch = cutoff === 0 || jobDate(job) >= cutoff;
 
-      return titleMatch && score >= minScore && statusMatch;
+      return titleMatch && score >= minScore && statusMatch && dateMatch;
     });
-  }, [jobs, vacancyFilters]);
+
+    const scoreOf = (job: Job) => job.userMatch?.matchScore ?? job.matchScore ?? 0;
+    const sorted = [...filtered];
+    switch (sortBy) {
+      case "newest": sorted.sort((a, b) => jobDate(b) - jobDate(a)); break;
+      case "oldest": sorted.sort((a, b) => jobDate(a) - jobDate(b)); break;
+      case "score": sorted.sort((a, b) => scoreOf(b) - scoreOf(a) || jobDate(b) - jobDate(a)); break;
+      case "ats": sorted.sort((a, b) => bestAts(b) - bestAts(a) || scoreOf(b) - scoreOf(a)); break;
+      case "company": sorted.sort((a, b) => (a.company || "~").localeCompare(b.company || "~")); break;
+      // "relevance" keeps the backend's composite ranking order.
+      default: break;
+    }
+    return sorted;
+  }, [jobs, vacancyFilters, blockedSet]);
 
   const selectedJob = useMemo(() => {
     if (selectedJobId) return jobs.find((job) => job.id === selectedJobId) || visibleJobs[0];
@@ -1329,9 +1413,18 @@ export function App() {
                   onGenerateResume={(jobId) => void generateJobDocument(jobId, "resume").catch(handleError)}
                   onGenerateCoverLetter={(jobId) => void generateJobDocument(jobId, "letter").catch(handleError)}
                   onGeneratePackage={(jobId) => void generateJobDocument(jobId, "package").catch(handleError)}
+                  onBlockCompany={(company) => void addBlacklistedCompany(company).catch(handleError)}
+                  blockedSet={blockedSet}
               />
           )}
-          {view === "companies" && <CompaniesView companies={companies} />}
+          {view === "companies" && (
+              <CompaniesView
+                  companies={companies}
+                  blacklistedCompanies={user?.blacklistedCompanies ?? []}
+                  onBlockCompany={(name) => void addBlacklistedCompany(name).catch(handleError)}
+                  onUnblockCompany={(companyId) => void removeBlacklistedCompany(companyId).catch(handleError)}
+              />
+          )}
           {view === "documents" && <DocumentsView documents={documents} onDownload={handleDownload} />}
           {view === "settings" && (
               <SettingsView
@@ -1352,6 +1445,7 @@ export function App() {
                   onRunDailyReport={() => void runDailyReport().catch(handleError)}
                   user={user}
                   onSaveDailyAutomation={(dailySettings) => void saveDailyAutomation(dailySettings).catch(handleError)}
+                  onSaveExcludeRemote={(excludeRemote) => void saveSearchExcludeRemote(excludeRemote).catch(handleError)}
               />
           )}
           {view === "admin" && <AdminView adminUsers={adminUsers} onLoadUsers={() => void loadAdminUsers().catch(handleError)} />}
