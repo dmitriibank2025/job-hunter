@@ -80,6 +80,13 @@ enum CandidateFactKind {
   EDUCATION
 }
 
+enum CandidateIndexJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
 enum UsageEventType {
   VACANCY_COLLECTED
   RESUME_GENERATED
@@ -89,44 +96,45 @@ enum UsageEventType {
 }
 
 model AppUser {
-  id           String             @id @default(uuid())
-  email        String             @unique
-  role         UserRole           @default(USER)
-  plan         SubscriptionPlan   @default(FREE)
-  status       SubscriptionStatus @default(ACTIVE)
-  passwordHash String?
-  dailyAutomationEnabled Boolean @default(false)
-  dailyAutomationTime    String  @default("09:00")
-  dailyAutomationTimezone String @default("Asia/Jerusalem")
-  dailyAutomationLastRunKey String?
+  id                                   String             @id @default(uuid())
+  email                                String             @unique
+  role                                 UserRole           @default(USER)
+  plan                                 SubscriptionPlan   @default(FREE)
+  status                               SubscriptionStatus @default(ACTIVE)
+  passwordHash                         String?
+  dailyAutomationEnabled               Boolean            @default(false)
+  dailyAutomationTime                  String             @default("09:00")
+  dailyAutomationTimezone              String             @default("Asia/Jerusalem")
+  dailyAutomationLastRunKey            String?
   dailyAutomationFullstackResumeBaseId String?
   dailyAutomationBackendResumeBaseId   String?
   dailyAutomationFrontendResumeBaseId  String?
-  searchExcludeRemote    Boolean @default(false)
-  candidateRevision      Int     @default(0)
+  searchExcludeRemote                  Boolean            @default(false)
+  candidateRevision                    Int                @default(0)
 
-  profile               UserProfile?
-  blacklistedCompanies  UserBlacklistedCompany[]
-  technologies          UserTechnology[]
-  experiences           UserExperience[]
-  projects              UserProject[]
-  educations            UserEducation[]
-  candidateFacts        CandidateFact[]
-  resumeBases           UserResumeBase[]
-  linkedinAccounts      UserLinkedInAccount[]
-  usageEvents           UserUsageEvent[]
-  generatedResumes      ResumeVersion[]
-  generatedCoverLetters CoverLetter[]
-  refreshTokens         AuthRefreshToken[]
-  jobMatches            UserJobMatch[]
-  applications          Application[]
-  emailEvents           EmailEvent[]
-  gmailAccounts         UserGmailAccount[]
-  appliedVacancies      AppliedVacancy[]
-  rejectionRecords      RejectionRecord[]
-  promptRules           PromptRule[]
+  profile                 UserProfile?
+  blacklistedCompanies    UserBlacklistedCompany[]
+  technologies            UserTechnology[]
+  experiences             UserExperience[]
+  projects                UserProject[]
+  educations              UserEducation[]
+  candidateFacts          CandidateFact[]
+  resumeBases             UserResumeBase[]
+  linkedinAccounts        UserLinkedInAccount[]
+  usageEvents             UserUsageEvent[]
+  generatedResumes        ResumeVersion[]
+  generatedCoverLetters   CoverLetter[]
+  refreshTokens           AuthRefreshToken[]
+  jobMatches              UserJobMatch[]
+  applications            Application[]
+  emailEvents             EmailEvent[]
+  gmailAccounts           UserGmailAccount[]
+  appliedVacancies        AppliedVacancy[]
+  rejectionRecords        RejectionRecord[]
+  promptRules             PromptRule[]
   telegramConnectSessions TelegramConnectSession[]
-  experienceChunks      ExperienceChunk[]
+  experienceChunks        ExperienceChunk[]
+  candidateIndexJobs      CandidateIndexJob[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -139,29 +147,54 @@ model AppUser {
 /// `embedding` is a pgvector column (text-embedding-3-small, 1536 dims); queried via
 /// raw SQL cosine distance (`<=>`), so it is typed Unsupported for Prisma.
 model ExperienceChunk {
-  id        String                       @id @default(uuid())
-  userId    String
-  user      AppUser                      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  source    String
-  text      String
-  embedding Unsupported("vector(1536)")?
-  createdAt DateTime                     @default(now())
+  id              String                       @id
+  userId          String
+  user            AppUser                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  candidateFactId String?
+  candidateFact   CandidateFact?               @relation(fields: [candidateFactId], references: [id], onDelete: SetNull)
+  entityId        String?
+  entityType      CandidateFactEntityType?
+  revision        Int                          @default(0)
+  contentHash     String                       @default("")
+  active          Boolean                      @default(false)
+  source          String
+  text            String
+  embedding       Unsupported("vector(1536)")?
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
 
   @@index([userId])
+  @@index([userId, revision, active])
+  @@index([candidateFactId])
+}
+
+model CandidateIndexJob {
+  id        String                  @id @default(uuid())
+  userId    String
+  user      AppUser                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  revision  Int
+  status    CandidateIndexJobStatus @default(PENDING)
+  attempts  Int                     @default(0)
+  lastError String?                 @db.Text
+  createdAt DateTime                @default(now())
+  updatedAt DateTime                @updatedAt
+
+  @@unique([userId, revision])
+  @@index([status, updatedAt])
 }
 
 model UserGmailAccount {
-  id            String   @id @default(uuid())
-  userId        String
-  user          AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  email         String?
-  googleUserId  String   @default("me")
-  refreshToken  String
-  scopes        String[]
-  connectedAt   DateTime @default(now())
-  lastUsedAt    DateTime?
-  lastError     String?
-  isActive      Boolean  @default(true)
+  id           String    @id @default(uuid())
+  userId       String
+  user         AppUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email        String?
+  googleUserId String    @default("me")
+  refreshToken String
+  scopes       String[]
+  connectedAt  DateTime  @default(now())
+  lastUsedAt   DateTime?
+  lastError    String?
+  isActive     Boolean   @default(true)
 
   @@unique([userId])
   @@index([isActive])
@@ -184,18 +217,18 @@ model UserProfile {
   userId String  @unique
   user   AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  fullName       String
-  location       String?
-  phone          String?
-  email          String
-  linkedin       String?
-  github         String?
-  portfolio      String?
-  resumeFilePath     String?
-  languages          String[] @default([])
-  summary            String?  @db.Text
-  telegramBotToken    String?  // encrypted at rest, never returned to the client
-  telegramChatId      String?  // captured server-side via the connect flow; never client-supplied
+  fullName            String
+  location            String?
+  phone               String?
+  email               String
+  linkedin            String?
+  github              String?
+  portfolio           String?
+  resumeFilePath      String?
+  languages           String[]  @default([])
+  summary             String?   @db.Text
+  telegramBotToken    String? // encrypted at rest, never returned to the client
+  telegramChatId      String? // captured server-side via the connect flow; never client-supplied
   telegramUsername    String?
   telegramFirstName   String?
   telegramConnectedAt DateTime?
@@ -238,9 +271,9 @@ model UserTechnology {
 }
 
 model UserExperience {
-  id           String   @id @default(uuid())
+  id           String                  @id @default(uuid())
   userId       String
-  user         AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         AppUser                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   company      String
   title        String
   type         CandidateExperienceType @default(COMMERCIAL)
@@ -248,10 +281,10 @@ model UserExperience {
   startDate    String
   endDate      String?
   project      String?
-  description  String?  @db.Text
-  bullets      String[] @default([])
-  technologies String[] @default([])
-  sortOrder    Int      @default(0)
+  description  String?                 @db.Text
+  bullets      String[]                @default([])
+  technologies String[]                @default([])
+  sortOrder    Int                     @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -302,19 +335,20 @@ model UserEducation {
 /// Resume claims and RAG chunks can reference these stable IDs without parsing
 /// a rendered base-resume document.
 model CandidateFact {
-  id         String                  @id
-  userId     String
-  user       AppUser                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  entityType CandidateFactEntityType
-  entityId   String
-  kind       CandidateFactKind
-  text       String                  @db.Text
-  verified   Boolean                 @default(true)
-  revision   Int
+  id          String                  @id
+  userId      String
+  user        AppUser                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityType  CandidateFactEntityType
+  entityId    String
+  kind        CandidateFactKind
+  text        String                  @db.Text
+  verified    Boolean                 @default(true)
+  revision    Int
   fingerprint String
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  experienceChunks ExperienceChunk[]
 
   @@unique([userId, fingerprint])
   @@index([userId, revision])
@@ -322,19 +356,19 @@ model CandidateFact {
 }
 
 model UserResumeBase {
-  id          String           @id @default(uuid())
-  userId      String
-  user        AppUser          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name        String
-  target      ResumeBaseTarget @default(FULLSTACK)
-  targetTitle String?
-  content     String           @db.Text
+  id             String           @id @default(uuid())
+  userId         String
+  user           AppUser          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  target         ResumeBaseTarget @default(FULLSTACK)
+  targetTitle    String?
+  content        String           @db.Text
   sourceFilePath String?
-  mode        ResumeBaseMode   @default(LINKED)
+  mode           ResumeBaseMode   @default(LINKED)
   sourceRevision Int?
-  definition  Json             @default("{}")
-  renderStatus ResumeBaseStatus @default(CURRENT)
-  isDefault   Boolean          @default(false)
+  definition     Json             @default("{}")
+  renderStatus   ResumeBaseStatus @default(CURRENT)
+  isDefault      Boolean          @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -375,23 +409,23 @@ model UserUsageEvent {
 }
 
 model Job {
-  id            String    @id @default(uuid())
-  externalJobId String?
-  title         String
-  company       String?
-  location      String?
-  url           String?
-  normalizedUrl String?   @unique
-  fingerprint   String?   @unique
-  postedAt      DateTime?
-  applyUrl      String?
-  employmentType String?
-  description   String
-  source        String?
+  id                    String    @id @default(uuid())
+  externalJobId         String?
+  title                 String
+  company               String?
+  location              String?
+  url                   String?
+  normalizedUrl         String?   @unique
+  fingerprint           String?   @unique
+  postedAt              DateTime?
+  applyUrl              String?
+  employmentType        String?
+  description           String
+  source                String?
   ingestionQualityScore Int?
   ingestionQualityState String?
-  ingestionMetadata Json?
-  status        JobStatus @default(NEW)
+  ingestionMetadata     Json?
+  status                JobStatus @default(NEW)
 
   resumeVersions   ResumeVersion[]
   coverLetters     CoverLetter[]
@@ -459,15 +493,15 @@ model ResumeVersion {
   userId String
   user   AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  content     String
-  format      String  @default("markdown")
-  filePath    String?
-  pdfFilePath String?
-  atsScore    Int?
-  atsIssues   String[] @default([])
-  atsMatchedKeywords String[] @default([])
-  atsMissingKeywords String[] @default([])
-  atsValidatedAt DateTime?
+  content            String
+  format             String    @default("markdown")
+  filePath           String?
+  pdfFilePath        String?
+  atsScore           Int?
+  atsIssues          String[]  @default([])
+  atsMatchedKeywords String[]  @default([])
+  atsMissingKeywords String[]  @default([])
+  atsValidatedAt     DateTime?
 
   applications Application[]
 
@@ -616,19 +650,19 @@ model CompanyPriorityTarget {
 }
 
 model AtsSourceConfiguration {
-  id               String   @id @default(uuid())
-  companyName      String
+  id                String    @id @default(uuid())
+  companyName       String
   normalizedCompany String
-  careerUrl        String   @unique
-  atsType          String
-  accountSlug      String?
-  confidence       Int      @default(0)
-  active           Boolean  @default(true)
-  lastDiscoveredAt DateTime @default(now())
-  lastVerifiedAt   DateTime?
-  metadata         Json?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  careerUrl         String    @unique
+  atsType           String
+  accountSlug       String?
+  confidence        Int       @default(0)
+  active            Boolean   @default(true)
+  lastDiscoveredAt  DateTime  @default(now())
+  lastVerifiedAt    DateTime?
+  metadata          Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   @@index([atsType, active])
   @@index([normalizedCompany])

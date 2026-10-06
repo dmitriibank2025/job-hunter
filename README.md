@@ -10,7 +10,9 @@ observable pipeline rather than a single free-form generation step.
 
 - Resume generation now follows `Job Analyzer -> RAG Query Planner -> pgvector/HNSW retrieval -> Evidence Mapper -> Resume Generator -> deterministic validation -> LLM Critic -> bounded Repair -> deterministic revalidation`. DOCX/PDF rendering starts only after the final factual PASS.
 - Stable requirement IDs and claim-level `evidenceIds`, `requirementIds`, `keywords`, and support status make every candidate claim traceable. Unsupported claims, fabricated employer projects, changed employment dates, fake education, and personal-to-commercial experience promotion are hard failures; document quality score remains separate from factual validity.
-- The uploaded 2026 base resume is the current source of truth. Role-specific Backend and Frontend bases are activated from the UI, personal AI work remains clearly separated from commercial experience, and edits made in the workspace now feed the selected generation base.
+- Canonical user-owned profile, skills, experience, projects, and education are the source of truth for linked resumes. Uploaded resumes remain immutable snapshots until explicitly detached; workspace edits rebuild linked bases and advance an optimistic `candidateRevision`.
+- Canonical facts have stable IDs and are indexed per user and revision. Every pgvector chunk records its `candidateFactId`, entity, content hash, and revision; retrieval accepts only active chunks for the user's current revision. A transactional queue retries failed embedding jobs without making stale chunks current.
+- Resume prompts and validation are candidate-neutral: names, employers, dates, experience length, education, and AI capabilities come from the current user's verified data rather than hardcoded policy.
 - The Word renderer uses the new base-resume header format: name, target title/stack, and contact/location rows are separated correctly. The city can no longer leak into the name field, and the stack is retained.
 - Vacancy ingestion now covers LinkedIn, official company career pages, Greenhouse, Lever, Ashby, Comeet, Workable, DevJobs, AllJobs, Drushim, JobMaster, GotFriends, SQLink, Ethosia, Nisha, Jobify, Employbl, and Glassdoor. Search Preferences lets each user select the active sources.
 - Collection is detail-first: pages are classified before parsing, official ATS APIs and `JobPosting` JSON-LD take precedence, source-specific DOM extraction is the fallback, and missing optional fields remain unknown instead of being invented.
@@ -123,6 +125,11 @@ Set these in the deploy platform:
 - `JOB_REPORT_CRON`
 - `JOB_REPORT_TIMEZONE`
 - `ACTIVE_PROVIDERS`
+- `CANDIDATE_INDEX_WORKER_ENABLED` (optional; defaults to enabled)
+
+Rebuild the current revision's RAG index from canonical facts after a migration
+or import with `pnpm --dir backend run backfill:candidate-index`. Add
+`--email=user@example.com` to limit the operation to one workspace.
 
 Supported vacancy sources:
 

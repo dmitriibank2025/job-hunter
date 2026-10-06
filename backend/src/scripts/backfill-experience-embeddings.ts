@@ -1,78 +1,39 @@
-/**
- * Backfill the candidate experience corpus for RAG.
- *
- * Parses the honest base resumes (src/data/base-resumes/*.md), extracts each
- * experience/project bullet as a chunk tagged with its role/company, embeds them
- * (text-embedding-3-small), and stores them in ExperienceChunk (pgvector).
- *
- * Usage: tsx src/scripts/backfill-experience-embeddings.ts --email=user@example.com
- */
-import fs from "fs";
-import path from "path";
-import { replaceUserChunks, retrieveRelevantChunks } from "../services/embedding.service";
+/** Rebuild versioned RAG chunks from canonical CandidateFact rows. */
+import "dotenv/config";
 import { prisma } from "../infrastructure/prisma";
+import { processCandidateIndexJob } from "../services/candidate-index.service";
+import { countUserChunks } from "../services/embedding.service";
 
 function getArg(flag: string): string | undefined {
-    const hit = process.argv.find((a) => a.startsWith(`--${flag}=`));
+    const hit = process.argv.find((value) => value.startsWith(`--${flag}=`));
     return hit?.split("=").slice(1).join("=").trim() || undefined;
 }
 
-/** Extract {source, text} chunks from a base resume markdown file. */
-function chunksFromBase(file: string): { source: string; text: string }[] {
-    const lines = fs.readFileSync(file, "utf-8").split("\n");
-    const out: { source: string; text: string }[] = [];
-    let source = path.basename(file, ".md");
-    for (const raw of lines) {
-        const line = raw.trim();
-        // Role/company header: "2024 – Present | Title | Company (Location)"
-        const header = line.match(/^\d{4}.*\|\s*([^|]+?)\s*(?:\||$)/);
-        if (header && line.includes("|")) {
-            const parts = line.split("|").map((p) => p.trim());
-            source = parts.slice(1, 3).join(" — ") || source;
-            continue;
-        }
-        if (line.startsWith("• ")) {
-            out.push({ source, text: line.slice(2).trim() });
-        }
-    }
-    return out;
-}
-
 async function main() {
-    const email = getArg("email");
-    const user = email
-        ? await prisma.appUser.findUniqueOrThrow({ where: { email }, select: { id: true, email: true } })
-        : (await prisma.appUser.findMany({ select: { id: true, email: true } }))[0];
-    if (!user) throw new Error("No user found; pass --email=");
+    const email = getArg("email")?.toLowerCase();
+    const users = await prisma.appUser.findMany({
+        where: email ? { email } : undefined,
+        select: { id: true, email: true, candidateRevision: true },
+        orderBy: { createdAt: "asc" },
+    });
+    if (!users.length) throw new Error(email ? `No user found for ${email}` : "No users found");
 
-    const dir = path.join(__dirname, "..", "data", "base-resumes");
-    const files = ["fullstack.md", "backend.md", "frontend.md"].map((f) => path.join(dir, f));
-    const seen = new Set<string>();
-    const chunks: { source: string; text: string }[] = [];
-    for (const f of files) {
-        for (const c of chunksFromBase(f)) {
-            if (seen.has(c.text)) continue; // dedupe identical bullets across bases
-            seen.add(c.text);
-            chunks.push(c);
-        }
+    for (const user of users) {
+        const job = await prisma.candidateIndexJob.upsert({
+            where: { userId_revision: { userId: user.id, revision: user.candidateRevision } },
+            create: { userId: user.id, revision: user.candidateRevision, status: "PENDING" },
+            update: { status: "PENDING", attempts: 0, lastError: null },
+            select: { id: true },
+        });
+        const status = await processCandidateIndexJob(job.id);
+        const chunks = await countUserChunks(user.id);
+        console.log(`${user.email}: revision=${user.candidateRevision}, status=${status}, activeChunks=${chunks}`);
     }
-
-    console.log(`Embedding ${chunks.length} experience chunks for ${user.email}...`);
-    const n = await replaceUserChunks(user.id, chunks);
-    console.log(`Stored ${n} chunks.`);
-
-    // Smoke-test retrieval
-    const probe = "event-driven backend with AWS Lambda, SQS, and idempotent processing";
-    const top = await retrieveRelevantChunks(user.id, probe, 3);
-    console.log(`\nRetrieval smoke-test for: "${probe}"`);
-    for (const r of top) console.log(`  [${r.distance.toFixed(3)}] (${r.source}) ${r.text.slice(0, 80)}`);
 }
 
 main()
-    .catch((err) => {
-        console.error(err instanceof Error ? err.message : err);
+    .catch((error) => {
+        console.error(error instanceof Error ? error.message : error);
         process.exitCode = 1;
     })
-    .finally(async () => {
-        await prisma.$disconnect();
-    });
+    .finally(async () => prisma.$disconnect());

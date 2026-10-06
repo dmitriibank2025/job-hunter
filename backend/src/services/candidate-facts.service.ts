@@ -225,6 +225,11 @@ export async function refreshCandidateFactsInTransaction(
     },
     data: { renderStatus: "STALE" },
   });
+  await tx.candidateIndexJob.upsert({
+    where: { userId_revision: { userId, revision: user.candidateRevision } },
+    create: { userId, revision: user.candidateRevision, status: "PENDING" },
+    update: { status: "PENDING", attempts: 0, lastError: null },
+  });
   return user.candidateRevision;
 }
 
