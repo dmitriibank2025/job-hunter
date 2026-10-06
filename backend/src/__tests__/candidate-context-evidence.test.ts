@@ -79,7 +79,9 @@ describe("structured candidate context evidence", () => {
   it("uses canonical fact IDs and preserves commercial/project boundaries", () => {
     const corpus = buildEvidenceCorpusFromCandidateContext(context);
 
-    expect(corpus.candidatePolicy).toBe("structured");
+    expect(corpus.evidence.map((fact) => fact.id)).toEqual(
+      expect.arrayContaining(context.facts.map((fact) => fact.id)),
+    );
     expect(corpus.evidence.find((fact) => fact.id === "fact-exp-bullet")).toMatchObject({ context: "commercial", entityId: "experience-1" });
     expect(corpus.evidence.find((fact) => fact.id === "fact-project-bullet")).toMatchObject({ context: "personal", entityId: "project-1" });
     expect(corpus.evidence.some((fact) => fact.text.includes("STALE SNAPSHOT"))).toBe(false);

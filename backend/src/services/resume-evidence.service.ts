@@ -167,7 +167,6 @@ export type EvidenceCorpus = {
   contactLines: string[];
   entityIds: { commercial: string[]; personal: string[] };
   categories: string[];
-  candidatePolicy: "dmitrii-bank" | "base" | "structured";
 };
 
 /** Build evidence directly from canonical user-owned facts, without reparsing a resume snapshot. */
@@ -247,7 +246,6 @@ export function buildEvidenceCorpusFromCandidateContext(context: CandidateContex
       personal: context.projects.map((project) => project.id),
     },
     categories: [...new Set(context.technologies.map((technology) => technology.category))],
-    candidatePolicy: "structured",
   };
 }
 
@@ -256,18 +254,15 @@ export function buildEvidenceCorpus(
   base: string,
   fullName: string,
 ): EvidenceCorpus {
-  const dmitrii = /^dmitrii\s+bank$/i.test(fullName.trim());
   const result: EvidenceCorpus = {
     evidence: [],
     contactLines: [],
     entityIds: { commercial: [], personal: [] },
     categories: [],
-    candidatePolicy: dmitrii ? "dmitrii-bank" : "base",
   };
   let section = "header",
     entityId: string | undefined,
     source = "profile",
-    skip = false,
     awaitingDescription = false;
   const add = (
     value: string,
@@ -292,7 +287,6 @@ export function buildEvidenceCorpus(
       .trim()
       .replace(/^#{1,6}\s*/, "")
       .replace(/^\*\*(.*?)\*\*$/, "$1");
-    if (dmitrii) line = line.replace(/Full Stack Developer \((?:Backend|Frontend) Focus\)/g, "Full Stack Developer");
     if (!line) continue;
     if (
       /^(summary|professional summary|skills|technical skills|experience|work experience|professional experience|personal projects|projects|education)$/i.test(
@@ -310,7 +304,6 @@ export function buildEvidenceCorpus(
               : "education";
       entityId = undefined;
       source = section;
-      skip = false;
       continue;
     }
     if (section === "header") {
@@ -321,8 +314,7 @@ export function buildEvidenceCorpus(
         add(line, "title");
       else result.contactLines.push(line);
     } else if (section === "summary") {
-      if (!dmitrii || /4\+ years of commercial experience/i.test(line))
-        for (const sentence of line.split(/(?<=[.!?])\s+(?=[A-Z])/)) add(sentence, "summary");
+      for (const sentence of line.split(/(?<=[.!?])\s+(?=[A-Z])/)) add(sentence, "summary");
     } else if (section === "skills") {
       const match = /^([^:]+):\s*(.+)$/.exec(line);
       if (match) {
@@ -335,34 +327,16 @@ export function buildEvidenceCorpus(
     } else {
       const context = section as "commercial" | "personal";
       if (/^(?:19|20)\d{2}.*\|/.test(line)) {
-        skip =
-          dmitrii &&
-          context === "commercial" &&
-          !/\|\s*(Optimadevs|VTA Center)\b/i.test(line);
         entityId = stableId("entity", context, line);
         source = line;
         awaitingDescription = true;
-        if (!skip) {
-          if (
-            dmitrii &&
-            context === "commercial" &&
-            !(
-              /Optimadevs/i.test(line)
-                ? /^2024\s*[–—-]\s*Present\s*\|\s*Full Stack Developer\s*\|/i
-                : /^2022\s*[–—-]\s*2024\s*\|\s*Full Stack Developer\s*\|/i
-            ).test(line)
-          )
-            throw new Error(
-              "Verified employment dates/title conflict with candidate policy",
-            );
-          result.entityIds[context].push(entityId);
-          add(line, "header", context);
-          const projectStack = line.split("|")[2];
-          if (context === "personal" && projectStack?.includes("·"))
-            for (const technology of projectStack.split("·"))
-              add(technology.trim(), "technology", context);
-        }
-      } else if (entityId && !skip) {
+        result.entityIds[context].push(entityId);
+        add(line, "header", context);
+        const projectStack = line.split("|")[2];
+        if (context === "personal" && projectStack?.includes("·"))
+          for (const technology of projectStack.split("·"))
+            add(technology.trim(), "technology", context);
+      } else if (entityId) {
         if (/^Technologies:/i.test(line))
           for (const item of line
             .replace(/^Technologies:\s*/i, "")
@@ -386,29 +360,6 @@ export function buildEvidenceCorpus(
       }
     }
   }
-  entityId = undefined;
-  source = "user-verified-profile";
-  if (dmitrii && !result.evidence.some(e => e.kind === "summary")) {
-    const role =
-      result.evidence.find((e) => e.kind === "title")?.text.split("|")[0].trim() ??
-      "Full Stack Engineer";
-    add(
-      `${role} with 4+ years of commercial experience building production systems with Node.js, TypeScript, and React.`,
-      "summary",
-    );
-    add(
-      "Commercial experience includes cloud-native applications, REST APIs, and event-driven workflows on AWS.",
-      "summary",
-    );
-    add(
-      "Independent projects include AI/LLM engineering with OpenAI, MCP tools, RAG, and pgvector.",
-      "summary",
-    );
-    add(
-      "Backend-heavy full stack development with PostgreSQL, MongoDB, Redis, and CI/CD.",
-      "summary",
-    );
-  }
   if (
     !result.evidence.some((e) => e.kind === "title") ||
     !result.evidence.some((e) => e.kind === "education")
@@ -416,8 +367,6 @@ export function buildEvidenceCorpus(
     throw new Error(
       "Cannot safely parse candidate title/education from base resume",
     );
-  if (dmitrii && result.entityIds.commercial.length !== 2)
-    throw new Error("Verified Optimadevs and VTA Center employment required");
   return result;
 }
 
@@ -795,19 +744,6 @@ export function validateEvidenceResume(
     ]),
     ...resume.education,
   ];
-  if (corpus.candidatePolicy === "dmitrii-bank") {
-    const prohibited =
-      /\bMCP\s+(?:Resources|Prompts)\b|\b(?:fine[- ]?tun\w*|model training|human evaluation)\b|HNSW[^.]*\b(?:improv\w*|reduc\w*|lower\w*)[^.]*latency|(?:improv\w*|reduc\w*|lower\w*)[^.]*latency[^.]*HNSW/i;
-    for (const c of allClaims)
-      if (prohibited.test(c.text)) {
-        fail(
-          "PROHIBITED_AI_CLAIM",
-          "claims",
-          "Claim conflicts with the explicitly verified AI capability policy",
-        );
-        if (!unsupportedClaims.includes(c)) unsupportedClaims.push(c);
-      }
-  }
   const skillsText = resume.skills
     .flatMap((s) => s.items.map((c) => c.text))
     .join(" ");

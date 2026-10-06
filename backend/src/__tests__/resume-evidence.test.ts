@@ -187,9 +187,16 @@ describe("verified evidence and deterministic validation", () => {
     expect(schema.safeParse({ ...rawAnalysis, requirements: [{ ...requirement, sourceQuote: quote }] }).success).toBe(true);
     expect(schema.safeParse({ ...rawAnalysis, requirements: [{ ...requirement, sourceQuote: "Strong knowledge in backend development using Node.js" }] }).success).toBe(false);
   });
-  test("backend/frontend focus annotations do not change verified employment identity", () => {
+  test("employment identity follows the exact user-provided header", () => {
     const focused = buildEvidenceCorpus(base.replace("2024 – Present | Full Stack Developer", "2024 – Present | Full Stack Developer (Backend Focus)"), "Dmitrii Bank");
-    expect(focused.entityIds.commercial).toEqual(corpus.entityIds.commercial);
+    expect(focused.entityIds.commercial).not.toEqual(corpus.entityIds.commercial);
+    expect(
+      focused.evidence.some(
+        (e) =>
+          e.kind === "header" &&
+          e.text.includes("Full Stack Developer (Backend Focus)"),
+      ),
+    ).toBe(true);
   });
   test("paraphrased compound requirements retain the exact employer quotation", () => {
     const quote = "Software fundamentals, including testing and code review";
@@ -211,7 +218,7 @@ describe("verified evidence and deterministic validation", () => {
         .map((e) => e.text),
     );
   });
-  test("explicit AI policy rejects a contradictory legacy source fact", () => {
+  test("candidate-specific AI facts are accepted when explicitly verified", () => {
     const resume = makeResume();
     const unsafe = structuredClone(corpus);
     const evidenceId = resume.projects[0].bullets[0].evidenceIds[0];
@@ -219,31 +226,33 @@ describe("verified evidence and deterministic validation", () => {
     unsafe.evidence.find((e) => e.id === evidenceId)!.text = text;
     resume.projects[0].bullets[0].text = text;
     const result = validateEvidenceResume(resume, analysis, map, unsafe);
-    expect(result.valid).toBe(false);
+    expect(result.valid).toBe(true);
     expect(
       result.hardFailures.some((f) => f.code === "PROHIBITED_AI_CLAIM"),
-    ).toBe(true);
-  });
-  test("current source education is retained exactly", () => {
-    expect(corpus.entityIds.commercial).toHaveLength(2);
-    expect(
-      corpus.evidence.some((e) => /AVSD|D\.M\.D|Tel-Ran/.test(e.text)),
     ).toBe(false);
+  });
+  test("all source employment, education, summaries, and dates are retained", () => {
+    expect(corpus.entityIds.commercial).toHaveLength(2);
     expect(fact("education").text).toContain("Master's degree, Computer Science & Medical Informatics");
     expect(fact("summary").text).toContain("4+ years of commercial experience");
     const other = buildEvidenceCorpus(base, "Someone Else");
     expect(other.evidence.some((e) => /Computer Science & Medical Informatics/.test(e.text))).toBe(
       true,
     );
-    expect(() =>
-      buildEvidenceCorpus(
-        base.replace(
-          "2024 – Present | Full Stack Developer",
-          "2023 – Present | Full Stack Developer",
-        ),
-        "Dmitrii Bank",
+    const updated = buildEvidenceCorpus(
+      base.replace(
+        "2024 – Present | Full Stack Developer",
+        "2023 – Present | Full Stack Developer",
       ),
-    ).toThrow("dates/title");
+      "Dmitrii Bank",
+    );
+    expect(
+      updated.evidence.some(
+        (e) =>
+          e.kind === "header" &&
+          e.text.startsWith("2023 – Present | Full Stack Developer"),
+      ),
+    ).toBe(true);
   });
   test("stable IDs survive reordering; invented requirements and contradictory classification fail", () => {
     expect(stableId("req", " Node.js ", "backend")).toBe(

@@ -401,7 +401,7 @@ function createParagraph(line: string): Paragraph {
 //   - Technologies: italic line
 //   - Bold skill labels, italic education descriptions
 
-// Exact values extracted from CV_Dmitrii_Bank_FSWD.docx reference
+// Exact values extracted from the approved reference resume design.
 const BLUE    = "2563EB";
 const DARK    = "1A1A2E";
 const GRAY    = "64748B";
